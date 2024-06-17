@@ -156,3 +156,4 @@ log/
 *.bin
 
 profile/
+compiled_cache/
