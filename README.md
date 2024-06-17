@@ -14,8 +14,8 @@ Clone the code and install the required dependencies:
 sudo docker run  --gpus all --net host --ipc host --shm-size 10G -it --rm --cap-add=SYS_PTRACE registry.cn-hangzhou.aliyuncs.com/pai-dlc/acc:r2.3.0-cuda12.1.0-py3.10-nightly bash
 
 # Clone the code and install the requirements.
-git clone https://github.com/AlibabaPAI/flashmodels
-cd ./flashmodels
+git clone https://github.com/AlibabaPAI/FlashModels.git
+cd ./FlashModels
 pip install -r requirements.txt
 ```
 
