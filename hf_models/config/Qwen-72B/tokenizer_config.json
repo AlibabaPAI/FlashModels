@@ -1,0 +1,11 @@
+{
+  "model_max_length": 32768,
+  "tokenizer_class": "QWenTokenizer",
+  "auto_map": {
+    "AutoTokenizer": [
+      "tokenization_qwen.QWenTokenizer",
+      null
+      ]
+  }
+}
+  

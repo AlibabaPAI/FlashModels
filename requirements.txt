@@ -1,0 +1,15 @@
+SentencePiece
+datasets
+numpy
+torch
+tokenizers>=0.13.3
+transformers==4.33.0
+accelerate
+transformers_stream_generator
+tiktoken
+peft
+yapf==0.30.0
+boto3
+cached-path
+omegaconf
+rich
