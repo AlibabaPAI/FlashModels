@@ -59,16 +59,10 @@ def patch_llama():
 
         return wrapper
 
-    xla_flags = os.getenv("XLA_FLAGS", "").split(" ")
-    pattern = r"--xla_gpu_enable_flash_attention=(\w+)"
-    for flag in xla_flags:
-        match = re.search(pattern, flag)
-        if match:
-            value = match.group(1)
-            if str(value).lower() == "true":
-                transformers.models.llama.modeling_llama.LlamaAttention.forward = wrap_for_flash_attention(
-                    transformers.models.llama.modeling_llama.LlamaAttention.
-                    forward)
+    # always attention_mask=None
+    transformers.models.llama.modeling_llama.LlamaAttention.forward = wrap_for_flash_attention(
+        transformers.models.llama.modeling_llama.LlamaAttention.
+        forward)
 
 
 def patch_gemma():
