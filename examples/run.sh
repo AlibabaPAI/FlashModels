@@ -165,6 +165,8 @@ if [ "$TP_NUM" -gt "1" ]; then
     export XLA_USE_SPMD=1
 fi
 
+export XLA_PERSISTENT_CACHE_PATH=./compiled_cache/
+
 MODEL_NAME=$(basename $MODEL_NAME_OR_PATH)
 JOB_NAME="${MODEL_NAME}_${ACCELERATOR}_bs${MBS}_seqlen${SEQLEN}_bf16-${BF16}_fp16-${FP16}_pp${PP_NUM}_tp${TP_NUM}_fsdp${FSDP_NUM}"
 

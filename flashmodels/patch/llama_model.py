@@ -8,6 +8,7 @@ import torch
 import torch_xla.core.xla_model as xm
 from torch import nn
 from torchacc.dist.tp import Mesh, mark_sharding
+from transformer.cache_utils import Cache
 from transformers.models.llama.configuration_llama import LlamaConfig
 from transformers.models.llama.modeling_llama import (ACT2FN, LlamaRMSNorm,
                                                       LlamaRotaryEmbedding,
@@ -396,11 +397,9 @@ def flash_attn_fwd(
     hidden_states: torch.Tensor,
     attention_mask: Optional[torch.Tensor] = None,
     position_ids: Optional[torch.Tensor] = None,
-    past_key_value: Optional[Cache] = None,
+    past_key_value: Optional[Tuple[torch.Tensor]] = None,
     output_attentions: bool = False,
     use_cache: bool = False,
-    cache_position: Optional[torch.LongTensor] = None,
-    **kwargs,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
     from torchacc.ops import flash_attn_varlen_xla
 
