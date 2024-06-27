@@ -47,19 +47,6 @@ def patch_llama(use_flash_attn):
     if bool(int(os.environ.get("LOW_CPU_MEM_USAGE", "0"))):
         rewrite_load()
 
-    def wrap_for_flash_attention(func):
-
-        def wrapper(*args, **kwargs):
-            kwargs["attention_mask"] = None
-            return func(*args, **kwargs)
-
-        return wrapper
-
-    # always attention_mask=None
-    transformers.models.llama.modeling_llama.LlamaAttention.forward = wrap_for_flash_attention(
-        transformers.models.llama.modeling_llama.LlamaAttention.
-        forward)
-
 
 def patch_gemma():
     # Set the attention_mask in GemmaAttention to None to match the pattern of FlashAttentionRewriter.
