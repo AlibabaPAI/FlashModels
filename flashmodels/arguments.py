@@ -213,6 +213,11 @@ def parse():
         default=-1,
         help="Maximum training steps")
     parser.add_argument(
+        "--use_flash_attn",
+        action="store_true",
+        default=False,
+        help="Use TriDao FlashAttention2")
+    parser.add_argument(
         "--log_loss", action="store_true", help="Print loss when logging steps")
 
     args = parser.parse_args()
@@ -271,7 +276,7 @@ def parse():
 
     if args.model_type == "llama" and args.accelerator == 'acc' and (
             args.fp16 or args.bf16):
-        patch_llama()
+        patch_llama(args.use_flash_attn)
     if args.model_type == "gemma" and args.accelerator == 'acc':
         patch_gemma()
 

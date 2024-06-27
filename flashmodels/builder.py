@@ -4,6 +4,7 @@ import os.path as osp
 
 import torch
 import torchacc as ta
+
 from transformers import (AutoConfig, AutoModelForCausalLM, AutoTokenizer,
                           get_scheduler)
 
@@ -62,7 +63,9 @@ class Builder(object):
         config = AutoConfig.from_pretrained(
             self.args.model_name_or_path, trust_remote_code=True)
         return self._init_fn(
-            AutoModelForCausalLM.from_config, config, trust_remote_code=True)
+            AutoModelForCausalLM.from_config, config,
+            attn_implementation="flash_attention_2" if self.args.use_flash_attn else "eager",
+            trust_remote_code=True)
 
     def build_model_from_pretrain(self):
         has_weight = False
@@ -78,6 +81,7 @@ class Builder(object):
             return self._init_fn(
                 AutoModelForCausalLM.from_pretrained,
                 self.args.model_name_or_path,
+                attn_implementation="flash_attention_2" if self.args.use_flash_attn else "eager",
                 cache_dir=self.args.cache_dir,
                 trust_remote_code=True)
         if self.args.local_rank == 0:
