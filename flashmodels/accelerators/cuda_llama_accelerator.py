@@ -13,6 +13,7 @@ from torch.distributed.fsdp.fully_sharded_data_parallel import \
     FullyShardedDataParallel as FSDP
 from torch.distributed.fsdp.fully_sharded_data_parallel import MixedPrecision
 from torch.distributed.fsdp.wrap import ModuleWrapPolicy
+from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 
 from flashmodels.accelerators.accelerator import (Accelerator,
                                                   AcceleratorFactory)
@@ -70,7 +71,7 @@ class CUDALLAMAAccelerator(Accelerator):
             checkpoint_wrapper,
             checkpoint_impl=CheckpointImpl.NO_REENTRANT,
         )
-        check_fn = lambda submodule: isinstance(submodule, transformers.models.llama.modeling_llama.LlamaDecoderLayer)
+        check_fn = lambda submodule: isinstance(LlamaDecoderLayer)
         apply_activation_checkpointing(
             model,
             checkpoint_wrapper_fn=non_reentrant_wrapper,
@@ -96,9 +97,7 @@ class CUDALLAMAAccelerator(Accelerator):
                 convert_outputs_to_fp32(model.forward.__func__), model)
 
         # Use auto_wrap_poliy for nested wrapping instead of only a top-level FSDP.
-        auto_wrap_policy = ModuleWrapPolicy({
-            transformers.models.llama.modeling_llama.LlamaDecoderLayer,
-        })
+        auto_wrap_policy = ModuleWrapPolicy({LlamaDecoderLayer, })
 
         mixed_precision_policy = None
         if self.args.fp16 or self.args.bf16:

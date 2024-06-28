@@ -99,7 +99,7 @@ class ACCLLAMAAccelerator(Accelerator):
                                                        self.args.sp)
 
         config = self.get_config(model)
-        model = ta.accelerate(model, config)
+        model = ta.accelerate(model, config=config)
 
         if self.args.tp_num > 1 and self.args.pp_num > 1:
             self.parallel_3d(model._get_underlay_model())
