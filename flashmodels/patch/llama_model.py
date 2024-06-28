@@ -8,7 +8,6 @@ import torch
 import torch_xla.core.xla_model as xm
 from torch import nn
 from torchacc.dist.tp import Mesh, mark_sharding
-from transformer.cache_utils import Cache
 from transformers.models.llama.configuration_llama import LlamaConfig
 from transformers.models.llama.modeling_llama import (ACT2FN, LlamaRMSNorm,
                                                       LlamaRotaryEmbedding,

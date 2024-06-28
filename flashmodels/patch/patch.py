@@ -33,6 +33,8 @@ def rewrite_load():
 
 def patch_llama(use_flash_attn):
     patch.patch_llama(use_flash_attn)
+    from flashmodels.patch.llama_model import (LlamaAttention,
+                                               LlamaDecoderLayer, LlamaMLP)
     if os.environ.get("ACC_LLAMA_TP") == "1":
         transformers.models.llama.modeling_llama.LlamaMLP = LlamaMLP
     if os.getenv("XLA_USE_SPMD") == "1":

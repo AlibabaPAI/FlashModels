@@ -71,7 +71,7 @@ class CUDALLAMAAccelerator(Accelerator):
             checkpoint_wrapper,
             checkpoint_impl=CheckpointImpl.NO_REENTRANT,
         )
-        check_fn = lambda submodule: isinstance(LlamaDecoderLayer)
+        check_fn = lambda submodule: isinstance(submodule, LlamaDecoderLayer)
         apply_activation_checkpointing(
             model,
             checkpoint_wrapper_fn=non_reentrant_wrapper,
@@ -97,7 +97,9 @@ class CUDALLAMAAccelerator(Accelerator):
                 convert_outputs_to_fp32(model.forward.__func__), model)
 
         # Use auto_wrap_poliy for nested wrapping instead of only a top-level FSDP.
-        auto_wrap_policy = ModuleWrapPolicy({LlamaDecoderLayer, })
+        auto_wrap_policy = ModuleWrapPolicy({
+            LlamaDecoderLayer,
+        })
 
         mixed_precision_policy = None
         if self.args.fp16 or self.args.bf16:
