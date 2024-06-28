@@ -5,13 +5,10 @@ import re
 from typing import Any
 
 import torch
+import torchacc.utils.patch as patch
 import transformers
 
 from flashmodels.logger import logger
-from flashmodels.patch.llama_model import (LlamaAttention, LlamaDecoderLayer,
-                                           LlamaMLP, flash_attn_fwd,
-                                           flash_attn_prep_mask,
-                                           make_causal_mask)
 
 
 def rewrite_load():
@@ -34,12 +31,11 @@ def rewrite_load():
     exec(modified, transformers.modeling_utils.__dict__)
 
 
-def patch_llama():
-    transformers.models.llama.modeling_llama._make_causal_mask = make_causal_mask
-    if os.getenv("ACC_FLASH_ATTN", "0") == "1":
-        transformers.models.llama.modeling_llama.LlamaModel._prepare_decoder_attention_mask = flash_attn_prep_mask
-        transformers.models.llama.modeling_llama.LlamaAttention.forward = flash_attn_fwd
-    elif os.environ.get("ACC_LLAMA_TP") == "1":
+def patch_llama(use_flash_attn):
+    patch.patch_llama(use_flash_attn)
+    from flashmodels.patch.llama_model import (LlamaAttention,
+                                               LlamaDecoderLayer, LlamaMLP)
+    if os.environ.get("ACC_LLAMA_TP") == "1":
         transformers.models.llama.modeling_llama.LlamaMLP = LlamaMLP
     if os.getenv("XLA_USE_SPMD") == "1":
         # use einsum in linear for SPMD TP/Ulysses.
@@ -50,25 +46,10 @@ def patch_llama():
     if bool(int(os.environ.get("LOW_CPU_MEM_USAGE", "0"))):
         rewrite_load()
 
-    # Set the attention_mask in LlamaAttention to None to match the pattern of FlashAttentionRewriter.
-    def wrap_for_flash_attention(func):
-
-        def wrapper(*args, **kwargs):
-            kwargs["attention_mask"] = None
-            return func(*args, **kwargs)
-
-        return wrapper
-
-    # always attention_mask=None
-    transformers.models.llama.modeling_llama.LlamaAttention.forward = wrap_for_flash_attention(
-        transformers.models.llama.modeling_llama.LlamaAttention.
-        forward)
-
 
 def patch_gemma():
     # Set the attention_mask in GemmaAttention to None to match the pattern of FlashAttentionRewriter.
     def wrap_for_flash_attention(func):
-
         def wrapper(*args, **kwargs):
             kwargs["attention_mask"] = None
             return func(*args, **kwargs)

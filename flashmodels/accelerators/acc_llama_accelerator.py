@@ -85,9 +85,7 @@ class ACCLLAMAAccelerator(Accelerator):
             model = self.tensor_parallel(model)
             return model, loader
 
-        if self.args.pp_num > 1:
-            # Prevent unnecessary model outputs
-            model.model.config.use_cache = False
+        model.model.config.use_cache = False
         # TODO: support this in torchacc
         if self.args.resume_from_checkpoint:
             assert self.args.fsdp_num == self.args.world_size, \
@@ -101,7 +99,7 @@ class ACCLLAMAAccelerator(Accelerator):
                                                        self.args.sp)
 
         config = self.get_config(model)
-        model = ta.accelerate(model, config)
+        model = ta.accelerate(model, config=config)
 
         if self.args.tp_num > 1 and self.args.pp_num > 1:
             self.parallel_3d(model._get_underlay_model())

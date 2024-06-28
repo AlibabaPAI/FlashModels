@@ -17,7 +17,7 @@ class ACCGLMAccelerator(Accelerator):
                 raise NotImplementedError("resume_from_checkpoint.")
 
             config = self.get_config(model)
-            model = ta.accelerate(model, config)
+            model = ta.accelerate(model, config=config)
             return model, loader
 
     def get_config(self, model):

@@ -18,9 +18,9 @@ DP_NUM=1            # data parallelism number
 PP_NUM=1            # pipeline parallelism number
 TP_NUM=1            # tensor parallelism number
 FSDP_NUM=1          # fsdp number
-FLASH_ATTN=1        # enable flash-attn-2
 DATA=./data/wikitext-2-raw-v1.json               # data name or path
 MODEL_NAME_OR_PATH="./hf_models/config/llama-1b" # model name or path
+USE_FLASH_ATTN=1
 
 
 OTHER_ARGS=""
@@ -28,7 +28,7 @@ OTHER_ARGS=""
 HELP_STR=("Usage: bash examples/run.sh [-h|--help] [--accelerator {acc, cuda}] [--model MODEL_NAME_OR_PATH] \n"
     "\t[--data DATASET_NAME_OR_PATH] [--mbs MICRO_BATCH_SIZE] [--max_seq_length MAX_SEQ_LENGTH] \n"
     "\t[--num_train_epochs NUM_TRAIN_EPOCHS] [--max_steps MAX_TRAIN_STEPS] [--pp PP_NUM] [--tp TP_NUM] [--fsdp FSDP_NUM] \n"
-    "\t[--ga GRADIENT_ACCUMULATION_STEPS] [--gc] [--bf16] [--fp16] [--fp32] [--no_fa] [--log_interval LOG_INTERVAL] \n"
+    "\t[--ga GRADIENT_ACCUMULATION_STEPS] [--gc] [--bf16] [--fp16] [--fp32] [--use_flash_attn] [--log_interval LOG_INTERVAL] \n"
     "\t[other args for apps/train.py] \n"
     "Examples: \n"
     "\tbash examples/run.sh --accelerator cuda --model ./hf_models/config/llama-7b\n"
@@ -125,8 +125,8 @@ while [[ $# -gt 0 ]]; do
         BF16=0
         shift
         ;;
-        --no_fa)
-        FLASH_ATTN=0
+        --use_flash_attn)
+        ACC_FLASH_ATTN=1
         shift
         ;;
         --log_interval)
@@ -150,6 +150,11 @@ OPTION_ARGS=""
 [[ "$BF16" -eq 1 ]] && OPTION_ARGS+="--bf16 "
 [[ "$FP16" -eq 1 ]] && OPTION_ARGS+="--fp16 "
 
+if [[ "$ACC_FLASH_ATTN" == 1 && ( "$FP16" -eq 1 || "$BF16" -eq 1 ) ]]; then
+    OPTION_ARGS+="--use_flash_attn "
+    export ACC_FLASH_ATTN=1
+fi
+
 if [ "$ACCELERATOR" == "cuda" ]; then
     [ "$PP_NUM" -gt 1 ] && echo "Error: Pipeline Parallelism is not supported for cuda accelerator." && exit 1
     [ "$TP_NUM" -gt 1 ] && echo "Error: Tensor Parallelism is not supported for cuda accelerator." && exit 1
@@ -158,11 +163,6 @@ fi
 if [ "$TP_NUM" -gt "1" ]; then
     export ACC_LLAMA_TP=1
     export XLA_USE_SPMD=1
-fi
-
-
-if [[ "$ACCELERATOR" == "acc" && "FLASH_ATTN" -eq 1 && ( "$FP16" -eq 1 || "$BF16" -eq 1 ) ]]; then
-    export ACC_FLASH_ATTN=1
 fi
 
 export XLA_PERSISTENT_CACHE_PATH=./compiled_cache/

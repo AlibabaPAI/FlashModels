@@ -12,7 +12,7 @@ class ACCGemmaAccelerator(Accelerator):
 
     def accelerate_internal(self, model, loader):
         config = self.get_config()
-        model = ta.accelerate(model, config)
+        model = ta.accelerate(model, config=config)
         return model, loader
 
     def get_config(self):
