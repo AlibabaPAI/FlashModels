@@ -108,6 +108,12 @@ class ACCLLAMAAccelerator(Accelerator):
         return model, loader
 
     def get_config(self, model):
+        import torch_xla.distributed.spmd as xs
+
+        def _shard_output_callable(output, mesh):
+            if not isinstance(output, tuple) and output['logits'] is not None:
+                xs.mark_sharding(output['logits'], mesh, ('fsdp', None, None))
+
         def get_split_points(llama, num_stages):
             split_points = []
             assert llama.config.num_hidden_layers >= num_stages
@@ -143,6 +149,7 @@ class ACCLLAMAAccelerator(Accelerator):
         config.dist.fsdp.wrap_layer_cls = {"LlamaDecoderLayer"}
         config.dist.fsdp.flatten_parameters = not self.args.lora
         config.dist.fsdp.use_spmd = self.args.spmd_fsdp
+        config.dist.fsdp.shard_output_callable = _shard_output_callable
 
         if self.args.tp_num > 1 and self.args.pp_num > 1:
             config.dist.topology = ["pp", "dp", "tp"]
