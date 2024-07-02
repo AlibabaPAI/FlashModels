@@ -10,7 +10,6 @@ NUM_EPOCHS=1        # number epoches
 MAX_STEPS=-1        # max steps
 GA=1                # gradients accumulation number
 LOG_INTERVAL=1      # log interval
-LOG_LOSS=0          # log loss
 GC=0                # gradients checkpoint
 FP16=0              # float16
 BF16=1              # bfloat16
@@ -19,9 +18,7 @@ DP_NUM=1            # data parallelism number
 PP_NUM=1            # pipeline parallelism number
 TP_NUM=1            # tensor parallelism number
 FSDP_NUM=1          # fsdp number
-SPMD_FSDP=0         # enable spmd_fsdp
 FLASH_ATTN=1        # enable flash-attn-2
-PROFILE=0           # enable torch.profiler
 DATA=./data/wikitext-2-raw-v1.json               # data name or path
 MODEL_NAME_OR_PATH="./hf_models/config/llama-1b" # model name or path
 
@@ -104,10 +101,6 @@ while [[ $# -gt 0 ]]; do
         shift
         shift
         ;;
-        --spmd_fsdp)
-        SPMD_FSDP=1
-        shift
-        ;;
         --ga)
         GA="$2"
         shift
@@ -136,10 +129,6 @@ while [[ $# -gt 0 ]]; do
         FLASH_ATTN=0
         shift
         ;;
-        --log_loss)
-        LOG_LOSS=1
-        shift
-        ;;
         --log_interval)
         LOG_INTERVAL="$2"
         shift
@@ -153,10 +142,6 @@ while [[ $# -gt 0 ]]; do
         OTHER_ARGS+=" $1"
         shift
         ;;
-        --profile)
-        PROFILE=1
-        shift
-        ;;
     esac
 done
 
@@ -164,9 +149,6 @@ OPTION_ARGS=""
 [[ "$GC" -eq 1 ]] && OPTION_ARGS+="--gc "
 [[ "$BF16" -eq 1 ]] && OPTION_ARGS+="--bf16 "
 [[ "$FP16" -eq 1 ]] && OPTION_ARGS+="--fp16 "
-[[ "$SPMD_FSDP" -eq 1 ]] && OPTION_ARGS+="--spmd_fsdp "
-[[ "$LOG_LOSS" -eq 1 ]] && OPTION_ARGS+="--log_loss "
-[[ "$PROFILE" -eq 1 ]] && OPTION_ARGS+="--profile "
 
 if [ "$ACCELERATOR" == "cuda" ]; then
     [ "$PP_NUM" -gt 1 ] && echo "Error: Pipeline Parallelism is not supported for cuda accelerator." && exit 1
