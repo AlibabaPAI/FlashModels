@@ -19,8 +19,8 @@ from flashmodels.utils import get_last_step_from_ckpt
 
 
 class Trainer(object):
-
-    def __init__(self, model, loader, optimizer, lr_scheduler, tokenizer, args):
+    def __init__(self, model, loader, optimizer, lr_scheduler, tokenizer,
+                 args):
         self.model = model
         self.loader = loader
         self.optimizer = optimizer
@@ -42,7 +42,8 @@ class Trainer(object):
             # some cases (such as llama 30B).
             with torch.profiler.profile() as prof:
                 pass
-            current_time = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            current_time = datetime.datetime.now().strftime(
+                "%Y-%m-%d_%H-%M-%S")
             dir_name = f"./{self.args.profile_dir}/{current_time}"
             os.makedirs(dir_name, exist_ok=True)
             # dump config to the profiling folder
@@ -66,7 +67,7 @@ class Trainer(object):
 
     def _context_manager(self):
         return torch.cuda.amp.autocast(
-            enabled=False if self.args.fsdp_num > 1 else True,
+            enabled=not (self.args.fsdp_num > 1 and not self.args.spmd_fsdp),
             dtype=torch.float16 if self.args.fp16 else torch.bfloat16,
             cache_enabled=True)
 
@@ -82,7 +83,8 @@ class Trainer(object):
             loss = 0.0
 
         if self.args.local_rank == 0:
-            time_each_step = (time.time() - begin_time) / self.args.log_interval
+            time_each_step = (time.time() -
+                              begin_time) / self.args.log_interval
             samples_per_step = float(
               self.args.micro_batch_size * self.args.gradient_accumulation_steps \
                   / time_each_step)
@@ -126,8 +128,8 @@ class Trainer(object):
                 outputs = self.model(**batch)
                 loss = outputs["loss"] / self.gradient_accumulation_steps
                 loss.backward()
-            if (self.args.use_zero2 or
-                    self.args.use_zero3) and not self.args.pp_num > 1:
+            if (self.args.use_zero2
+                    or self.args.use_zero3) and not self.args.pp_num > 1:
                 self.model = self.accelerator.shard_grad(self.model)
             nonlocal total_loss
             total_loss += loss.clone().detach()
@@ -151,14 +153,16 @@ class Trainer(object):
             return begin
 
         loader = ta.AsyncLoader(self.loader, self.device)
-        if self.args.tp_num > 1 and self.args.dp_num > 1 and not self.args.pp_num > 1:
+        if (self.args.tp_num > 1 and self.args.dp_num > 1
+                and not self.args.pp_num > 1) or (self.args.fsdp_num > 1
+                                                  and self.args.spmd_fsdp):
             devices_ids = np.arange(self.args.world_size)
-            mesh = Mesh(devices_ids, (self.args.dp_num, self.args.tp_num),
-                        ("x", "y"))
-            loader = pl.MpDeviceLoader(
-                self.loader,
-                self.device,
-                input_sharding=xs.ShardingSpec(mesh, (0, None)))
+            dp_num = self.args.dp_num if self.args.dp_num > 1 else self.args.fsdp_num
+            mesh = Mesh(devices_ids, (dp_num, self.args.tp_num), ("x", "y"))
+            loader = pl.MpDeviceLoader(self.loader,
+                                       self.device,
+                                       input_sharding=xs.ShardingSpec(
+                                           mesh, (0, None)))
 
         for epoch in range(0, self.args.num_train_epochs):
             self.model.train()
@@ -184,8 +188,9 @@ class Trainer(object):
         def _step(begin, step, batch):
             found_inf = None
             if self.args.force_use_syncfree_adam:
-                found_inf = torch.tensor(
-                    0, dtype=torch.float, device=self.device)
+                found_inf = torch.tensor(0,
+                                         dtype=torch.float,
+                                         device=self.device)
             if last_step > 0:
                 step += last_step + 1
             if self.args.pp_num > 1:
@@ -197,8 +202,8 @@ class Trainer(object):
                     return loss
 
                 with self._context_manager():
-                    loss = self.model.forward_backward(
-                        **batch, output_fn=output_fn)
+                    loss = self.model.forward_backward(**batch,
+                                                       output_fn=output_fn)
             else:
                 with self._context_manager():
                     outputs = self.model(**batch)
@@ -207,8 +212,8 @@ class Trainer(object):
                     scaler.scale(loss).backward()
                 else:
                     loss.backward()
-            if (self.args.use_zero2 or
-                    self.args.use_zero3) and not self.args.pp_num > 1:
+            if (self.args.use_zero2
+                    or self.args.use_zero3) and not self.args.pp_num > 1:
                 self.model = self.accelerator.shard_grad(self.model)
             nonlocal total_loss
             total_loss += loss.clone().detach()
@@ -241,14 +246,16 @@ class Trainer(object):
             return begin
 
         loader = ta.AsyncLoader(self.loader, self.device)
-        if self.args.tp_num > 1 and self.args.dp_num > 1 and not self.args.pp_num > 1:
+        if (self.args.tp_num > 1 and self.args.dp_num > 1
+                and not self.args.pp_num > 1) or (self.args.fsdp_num > 1
+                                                  and self.args.spmd_fsdp):
             devices_ids = np.arange(self.args.world_size)
-            mesh = Mesh(devices_ids, (self.args.dp_num, self.args.tp_num),
-                        ("x", "y"))
-            loader = pl.MpDeviceLoader(
-                self.loader,
-                self.device,
-                input_sharding=xs.ShardingSpec(mesh, (0, None)))
+            dp_num = self.args.dp_num if self.args.dp_num > 1 else self.args.fsdp_num
+            mesh = Mesh(devices_ids, (dp_num, self.args.tp_num), ("x", "y"))
+            loader = pl.MpDeviceLoader(self.loader,
+                                       self.device,
+                                       input_sharding=xs.ShardingSpec(
+                                           mesh, (0, None)))
 
         for epoch in range(0, self.args.num_train_epochs):
             self.model.train()
@@ -300,8 +307,9 @@ class Trainer(object):
                     f"-of-{ta.dist.world_size()}-step-{step}.pth"))
 
         # save max_step
-        ta.save(
-            step, osp.join(self.args.ckpt_dir, "MAX_STEP"), master_only=True)
+        ta.save(step,
+                osp.join(self.args.ckpt_dir, "MAX_STEP"),
+                master_only=True)
         ta.mark_step()
 
         # TODO(wenting.swt): clean expired checkpoints.
@@ -368,7 +376,10 @@ class Trainer(object):
         max_step = 0
 
         def _step(begin, step, batch):
-            batch = {key: value.to(self.device) for key, value in batch.items()}
+            batch = {
+                key: value.to(self.device)
+                for key, value in batch.items()
+            }
             outputs = self.model(**batch)
             loss = outputs["loss"]
             loss.backward()

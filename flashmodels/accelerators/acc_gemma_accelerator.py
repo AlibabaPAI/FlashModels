@@ -5,7 +5,6 @@ from flashmodels.accelerators.accelerator import (Accelerator,
 
 
 class ACCGemmaAccelerator(Accelerator):
-
     def accelerate(self, model, loader):
         model, loader = self.accelerate_internal(model, loader)
         return model, loader

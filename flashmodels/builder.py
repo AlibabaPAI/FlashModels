@@ -29,7 +29,6 @@ def _count_parameters(model):
 
 class Builder(object):
     """build model, tokenizer, loader, optimizer and lr_scheduler"""
-
     def __init__(self, args):
         self.args = args
         self._init_fn = lambda func, *args, **kwargs: func(*args, **kwargs)
@@ -59,10 +58,11 @@ class Builder(object):
         return model, loader, tokenizer
 
     def build_model_from_ckpt(self):
-        config = AutoConfig.from_pretrained(
-            self.args.model_name_or_path, trust_remote_code=True)
-        return self._init_fn(
-            AutoModelForCausalLM.from_config, config, trust_remote_code=True)
+        config = AutoConfig.from_pretrained(self.args.model_name_or_path,
+                                            trust_remote_code=True)
+        return self._init_fn(AutoModelForCausalLM.from_config,
+                             config,
+                             trust_remote_code=True)
 
     def build_model_from_pretrain(self):
         has_weight = False
@@ -75,11 +75,10 @@ class Builder(object):
             # from hugging face
             has_weight = True
         if has_weight:
-            return self._init_fn(
-                AutoModelForCausalLM.from_pretrained,
-                self.args.model_name_or_path,
-                cache_dir=self.args.cache_dir,
-                trust_remote_code=True)
+            return self._init_fn(AutoModelForCausalLM.from_pretrained,
+                                 self.args.model_name_or_path,
+                                 cache_dir=self.args.cache_dir,
+                                 trust_remote_code=True)
         if self.args.local_rank == 0:
             logger.warning("Model weights are not been set, because" \
                            " there is no .bin file in path %s." %    \
@@ -102,7 +101,7 @@ class Builder(object):
         optimizer = self.build_optimizer(model, args)
         lr_scheduler = self.build_lr_scheduler(optimizer, loader, args)
 
-        if self.args.fsdp_num > 1:
+        if self.args.fsdp_num > 1 and not self.args.spmd_fsdp:
             optimizer = self._reset_and_flat_param_for_fsdp(model, optimizer)
         if self.args.resume_from_checkpoint and \
                 get_last_step_from_ckpt(self.args.ckpt_dir) > 0:
@@ -144,14 +143,16 @@ class Builder(object):
                     p for n, p in model.named_parameters()
                     if (n in decay_parameters and p.requires_grad)
                 ],
-                "weight_decay": 0.0,
+                "weight_decay":
+                0.0,
             },
             {
                 "params": [
                     p for n, p in model.named_parameters()
                     if (n not in decay_parameters and p.requires_grad)
                 ],
-                "weight_decay": 0.0,
+                "weight_decay":
+                0.0,
             },
         ]
 
@@ -170,9 +171,8 @@ class Builder(object):
                     loader) // args.gradient_accumulation_steps
             args.num_train_epochs = args.max_train_steps // num_update_steps_per_epoch + int(
                 args.max_train_steps % num_update_steps_per_epoch > 0)
-        warmup_steps = (
-            args.warmup_steps if args.warmup_steps > 0 else math.ceil(
-                num_training_steps * args.warmup_ratio))
+        warmup_steps = (args.warmup_steps if args.warmup_steps > 0 else
+                        math.ceil(num_training_steps * args.warmup_ratio))
         lr_scheduler = get_scheduler(
             name=args.lr_scheduler_type,
             optimizer=optimizer,

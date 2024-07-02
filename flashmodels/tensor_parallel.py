@@ -7,7 +7,6 @@ from torchacc.dist.tp import Mesh, mark_sharding
 
 
 class TPContext:
-
     def __init__(self) -> None:
         self.pp_num = 1
         self.dp_num = 1
@@ -82,7 +81,6 @@ class PatchedLinearFor3D(torch.autograd.Function):
     has been added to the backward pass to avoid the issue of SPMD `dot_handler`
     inserting collective permute when dealing with ReplicateOnLastTileDim.
     """
-
     @staticmethod
     def forward(ctx, input, weight, bias=None, old_specs=None, new_specs=None):
         # bias is an optional argument
@@ -111,8 +109,9 @@ class PatchedLinearFor3D(torch.autograd.Function):
             if old_specs:
                 context.tp_mark_sharding(grad_weight, old_specs)
             if new_specs:
-                grad_weight = context.tp_mark_sharding(
-                    grad_weight, new_specs, barrier=True)
+                grad_weight = context.tp_mark_sharding(grad_weight,
+                                                       new_specs,
+                                                       barrier=True)
         if bias is not None and ctx.needs_input_grad[2]:
             grad_bias = torch.einsum("bik->k", grad_output)
 
@@ -125,7 +124,6 @@ class PatchedLinearForSP(torch.autograd.Function):
     during the transition from SP to TP, the full activation from fwd is not used in bwd.
     TODO: Merge PatchedLinearForSP and PatchedLinearFor3D into one.
     """
-
     @staticmethod
     def forward(ctx,
                 input,

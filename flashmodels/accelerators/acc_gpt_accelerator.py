@@ -8,7 +8,6 @@ from flashmodels.accelerators.accelerator import (Accelerator,
 
 
 class ACCGPTAccelerator(Accelerator):
-
     def accelerate(self, model, loader):
         model, loader = self.accelerate_internal(model, loader)
 
@@ -51,7 +50,7 @@ class ACCGPTAccelerator(Accelerator):
         mask_mesh_shape = (num_devices, 1)
         devices_ids = np.arange(num_devices)
         mask_mesh = Mesh(devices_ids, mask_mesh_shape, ("X", "Y"))
-        label_mesh_shape = (num_devices,)
+        label_mesh_shape = (num_devices, )
         label_mesh = Mesh(devices_ids, label_mesh_shape, ("X"))
 
         for encoder_layer in model.transformer.h:
@@ -64,8 +63,10 @@ class ACCGPTAccelerator(Accelerator):
             mark_sharding(encoder_layer.self_attn.o_proj.weight, mask_mesh,
                           (0, 1))
 
-            mark_sharding(encoder_layer.mlp.gate_proj.weight, mask_mesh, (0, 1))
-            mark_sharding(encoder_layer.mlp.down_proj.weight, mask_mesh, (1, 0))
+            mark_sharding(encoder_layer.mlp.gate_proj.weight, mask_mesh,
+                          (0, 1))
+            mark_sharding(encoder_layer.mlp.down_proj.weight, mask_mesh,
+                          (1, 0))
             mark_sharding(encoder_layer.mlp.up_proj.weight, mask_mesh, (0, 1))
 
 

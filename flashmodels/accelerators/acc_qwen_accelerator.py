@@ -6,7 +6,6 @@ from flashmodels.logger import logger
 
 
 class ACCQwenAccelerator(Accelerator):
-
     def accelerate(self, model, loader):
         if self.args.lora:
             from peft import LoraConfig, TaskType, get_peft_model
