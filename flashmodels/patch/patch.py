@@ -34,17 +34,17 @@ def rewrite_load():
     exec(modified, transformers.modeling_utils.__dict__)
 
 
-def patch_llama():
+def patch_llama(use_tp=False):
     transformers.models.llama.modeling_llama._make_causal_mask = make_causal_mask
     if os.getenv("ACC_FLASH_ATTN", "0") == "1":
         transformers.models.llama.modeling_llama.LlamaModel._prepare_decoder_attention_mask = flash_attn_prep_mask
         transformers.models.llama.modeling_llama.LlamaAttention.forward = flash_attn_fwd
     elif os.environ.get("ACC_LLAMA_TP") == "1":
         transformers.models.llama.modeling_llama.LlamaMLP = LlamaMLP
-    # if os.getenv("XLA_USE_SPMD") == "1":
-    #     # use einsum in linear for SPMD TP/Ulysses.
-    #     transformers.models.llama.modeling_llama.LlamaAttention = LlamaAttention
-    #     transformers.models.llama.modeling_llama.LlamaDecoderLayer = LlamaDecoderLayer
+    if use_tp:
+        # use einsum in linear for SPMD TP/Ulysses.
+        transformers.models.llama.modeling_llama.LlamaAttention = LlamaAttention
+        transformers.models.llama.modeling_llama.LlamaDecoderLayer = LlamaDecoderLayer
 
     # (wenting.swt): Delete me when merged in transformers
     if bool(int(os.environ.get("LOW_CPU_MEM_USAGE", "0"))):
