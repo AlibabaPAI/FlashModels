@@ -100,7 +100,7 @@ class ACCLLAMAAccelerator(Accelerator):
                                                        self.args.sp)
 
         config = self.get_config(model)
-        model = ta.accelerate(model, config)
+        model = ta.accelerate(model, config=config)
 
         if self.args.tp_num > 1 and self.args.pp_num > 1:
             self.parallel_3d(model._get_underlay_model())
@@ -142,7 +142,7 @@ class ACCLLAMAAccelerator(Accelerator):
         config.dist.fsdp.size = self.args.fsdp_num
         config.dist.fsdp.wrap_layer_cls = {"LlamaDecoderLayer"}
         config.dist.fsdp.flatten_parameters = not self.args.lora
-        config.dist.fsdp.spmd_fsdp = self.args.spmd_fsdp
+        config.dist.fsdp.use_spmd = self.args.spmd_fsdp
 
         if self.args.tp_num > 1 and self.args.pp_num > 1:
             config.dist.topology = ["pp", "dp", "tp"]
