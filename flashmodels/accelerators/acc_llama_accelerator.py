@@ -108,11 +108,9 @@ class ACCLLAMAAccelerator(Accelerator):
         return model, loader
 
     def get_config(self, model):
-        import torch_xla.distributed.spmd as xs
-
         def _shard_output_callable(output, mesh):
             if not isinstance(output, tuple) and output['logits'] is not None:
-                xs.mark_sharding(output['logits'], mesh, ('fsdp', None, None))
+                mark_sharding(output['logits'], mesh, ('fsdp', None, None))
 
         def get_split_points(llama, num_stages):
             split_points = []
