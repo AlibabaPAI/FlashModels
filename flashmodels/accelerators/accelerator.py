@@ -4,7 +4,6 @@ _accelerators = {}
 
 
 class Accelerator(ABC):
-
     def __init__(self, args):
         self.args = args
 
@@ -19,7 +18,6 @@ class Accelerator(ABC):
 
 
 class AcceleratorFactory:
-
     @staticmethod
     def regist(key, builder):
         global _accelerators

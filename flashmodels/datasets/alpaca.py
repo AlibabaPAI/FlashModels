@@ -33,15 +33,15 @@ DEFAULT_EOS_TOKEN = "</s>"
 DEFAULT_BOS_TOKEN = "<s>"
 DEFAULT_UNK_TOKEN = "<unk>"
 PROMPT_DICT = {
-    "prompt_input": (
-        "Below is an instruction that describes a task, paired with an input that provides further context. "
-        "Write a response that appropriately completes the request.\n\n"
-        "### Instruction:\n{instruction}\n\n### Input:\n{input}\n\n### Response:"
-    ),
+    "prompt_input":
+    ("Below is an instruction that describes a task, paired with an input that provides further context. "
+     "Write a response that appropriately completes the request.\n\n"
+     "### Instruction:\n{instruction}\n\n### Input:\n{input}\n\n### Response:"
+     ),
     "prompt_no_input":
-        ("Below is an instruction that describes a task. "
-         "Write a response that appropriately completes the request.\n\n"
-         "### Instruction:\n{instruction}\n\n### Response:"),
+    ("Below is an instruction that describes a task. "
+     "Write a response that appropriately completes the request.\n\n"
+     "### Instruction:\n{instruction}\n\n### Response:"),
 }
 
 
@@ -121,7 +121,6 @@ def preprocess(sources: Sequence[str], targets: Sequence[str],
 
 class SupervisedDataset(Dataset):
     """Dataset for supervised fine-tuning."""
-
     def __init__(self, data_path: str,
                  tokenizer: transformers.PreTrainedTokenizer,
                  padding_strategy: str):
@@ -163,15 +162,15 @@ class DataCollatorForSupervisedDataset(object):
     tokenizer: transformers.PreTrainedTokenizer
 
     def __call__(self, instances: Sequence[Dict]) -> Dict[str, torch.Tensor]:
-        input_ids, labels = tuple([instance[key]
-                                   for instance in instances]
+        input_ids, labels = tuple([instance[key] for instance in instances]
                                   for key in ("input_ids", "labels"))
         input_ids = torch.nn.utils.rnn.pad_sequence(
             input_ids,
             batch_first=True,
             padding_value=self.tokenizer.pad_token_id)
-        labels = torch.nn.utils.rnn.pad_sequence(
-            labels, batch_first=True, padding_value=IGNORE_INDEX)
+        labels = torch.nn.utils.rnn.pad_sequence(labels,
+                                                 batch_first=True,
+                                                 padding_value=IGNORE_INDEX)
         return dict(
             input_ids=input_ids,
             labels=labels,
@@ -197,10 +196,9 @@ def get_alpaca_loader(model, tokenizer, args):
     )
 
     tokenizer.model_max_length = args.max_seq_length
-    train_dataset = SupervisedDataset(
-        tokenizer=tokenizer,
-        data_path=args.dataset_name_or_path,
-        padding_strategy=args.padding_strategy)
+    train_dataset = SupervisedDataset(tokenizer=tokenizer,
+                                      data_path=args.dataset_name_or_path,
+                                      padding_strategy=args.padding_strategy)
     data_collator = DataCollatorForSupervisedDataset(tokenizer=tokenizer)
     train_sampler = None
     data_num_replicas = args.fsdp_num * args.dp_num
@@ -211,7 +209,7 @@ def get_alpaca_loader(model, tokenizer, args):
         # + config.get_mesh().get_fsdp_rank()
         args.disable_train_sampler = True
     if (not args.disable_train_sampler) and (data_num_replicas > 1) \
-            and (not args.tp_num > 1):
+            and (not args.tp_num > 1) and (not args.spmd_fsdp):
         train_sampler = torch.utils.data.distributed.DistributedSampler(
             train_dataset,
             num_replicas=data_num_replicas,
@@ -223,11 +221,12 @@ def get_alpaca_loader(model, tokenizer, args):
         bs *= args.dp_num
     if args.pp_num > 1:
         bs *= args.gradient_accumulation_steps
-    loader = torch.utils.data.DataLoader(
-        train_dataset,
-        batch_size=bs,
-        collate_fn=data_collator,
-        sampler=train_sampler,
-        drop_last=True)
+    if args.spmd_fsdp:
+        bs *= args.fsdp_num
+    loader = torch.utils.data.DataLoader(train_dataset,
+                                         batch_size=bs,
+                                         collate_fn=data_collator,
+                                         sampler=train_sampler,
+                                         drop_last=True)
 
     return loader

@@ -41,10 +41,10 @@ def patch_llama():
         transformers.models.llama.modeling_llama.LlamaAttention.forward = flash_attn_fwd
     elif os.environ.get("ACC_LLAMA_TP") == "1":
         transformers.models.llama.modeling_llama.LlamaMLP = LlamaMLP
-    if os.getenv("XLA_USE_SPMD") == "1":
-        # use einsum in linear for SPMD TP/Ulysses.
-        transformers.models.llama.modeling_llama.LlamaAttention = LlamaAttention
-        transformers.models.llama.modeling_llama.LlamaDecoderLayer = LlamaDecoderLayer
+    # if os.getenv("XLA_USE_SPMD") == "1":
+    #     # use einsum in linear for SPMD TP/Ulysses.
+    #     transformers.models.llama.modeling_llama.LlamaAttention = LlamaAttention
+    #     transformers.models.llama.modeling_llama.LlamaDecoderLayer = LlamaDecoderLayer
 
     # (wenting.swt): Delete me when merged in transformers
     if bool(int(os.environ.get("LOW_CPU_MEM_USAGE", "0"))):
@@ -52,7 +52,6 @@ def patch_llama():
 
     # Set the attention_mask in LlamaAttention to None to match the pattern of FlashAttentionRewriter.
     def wrap_for_flash_attention(func):
-
         def wrapper(*args, **kwargs):
             kwargs["attention_mask"] = None
             return func(*args, **kwargs)
@@ -61,14 +60,12 @@ def patch_llama():
 
     # always attention_mask=None
     transformers.models.llama.modeling_llama.LlamaAttention.forward = wrap_for_flash_attention(
-        transformers.models.llama.modeling_llama.LlamaAttention.
-        forward)
+        transformers.models.llama.modeling_llama.LlamaAttention.forward)
 
 
 def patch_gemma():
     # Set the attention_mask in GemmaAttention to None to match the pattern of FlashAttentionRewriter.
     def wrap_for_flash_attention(func):
-
         def wrapper(*args, **kwargs):
             kwargs["attention_mask"] = None
             return func(*args, **kwargs)

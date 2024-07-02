@@ -3,7 +3,6 @@ from flashmodels.accelerators.accelerator import (Accelerator,
 
 
 class MegatronAccelerator(Accelerator):
-
     def accelerate(self, model, loader):
         raise NotImplemented("MegatronAccelerator is not implemented.")
 

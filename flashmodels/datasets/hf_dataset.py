@@ -18,8 +18,8 @@ def get_hf_dataset_loader(tokenizer, args):
     text_column_name = "text" if "text" in column_names else column_names[0]
 
     def tokenize_function(examples):
-        return tokenizer(
-            examples[text_column_name], return_token_type_ids=False)
+        return tokenizer(examples[text_column_name],
+                         return_token_type_ids=False)
 
     tokenized_datasets = raw_datasets.map(
         tokenize_function,
@@ -31,7 +31,8 @@ def get_hf_dataset_loader(tokenizer, args):
 
     def group_texts(examples):
         concatenated_examples = {
-            k: list(itertools.chain(*examples[k])) for k in examples.keys()
+            k: list(itertools.chain(*examples[k]))
+            for k in examples.keys()
         }
         total_length = len(concatenated_examples[list(examples.keys())[0]])
         if total_length >= block_size:
@@ -60,7 +61,7 @@ def get_hf_dataset_loader(tokenizer, args):
         # + config.get_mesh().get_fsdp_rank()
         args.disable_train_sampler = True
     if (not args.disable_train_sampler) and (data_num_replicas > 1) \
-            and (not args.tp_num > 1):
+            and (not args.tp_num > 1) and (not args.spmd_fsdp):
         train_sampler = torch.utils.data.distributed.DistributedSampler(
             train_dataset,
             num_replicas=(1 if args.tp_num > 1 else data_num_replicas),
@@ -72,6 +73,8 @@ def get_hf_dataset_loader(tokenizer, args):
         bs *= args.dp_num
     if args.pp_num > 1:
         bs *= args.gradient_accumulation_steps
+    if args.spmd_fsdp:
+        bs *= args.fsdp_num
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=bs,

@@ -18,7 +18,6 @@ import flashmodels.tensor_parallel as tensor_parallel
 
 class Linear3d(nn.Module):
     """ Custom Linear layer"""
-
     def __init__(self, in_dim, out_dim, keep_dim):
         super().__init__()
         self.weight = nn.Parameter(torch.empty(in_dim, out_dim, keep_dim))
@@ -28,7 +27,6 @@ class Linear3d(nn.Module):
 
 
 class LlamaMLP(nn.Module):
-
     def __init__(
         self,
         hidden_size: int,
@@ -54,26 +52,25 @@ class LlamaMLP(nn.Module):
             return self.down_proj(self.act_fn(x1) * x2)
 
         if tensor_parallel.get_tp_context().enable_sp():
-            x = tensor_parallel.fx_mark_sharding(
-                x, ("dp", None, None), barrier=True)
+            x = tensor_parallel.fx_mark_sharding(x, ("dp", None, None),
+                                                 barrier=True)
             tensor_parallel.fx_register_hook(x, ("dp", None, None))
-            tensor_parallel.fx_register_hook(
-                x, ("dp", "tp", None), barrier=True)
+            tensor_parallel.fx_register_hook(x, ("dp", "tp", None),
+                                             barrier=True)
 
         out = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
         if tensor_parallel.get_tp_context().enable_sp():
             # shard on sequence dim.
             tensor_parallel.fx_mark_sharding(out, ("dp", None, None))
-            out = tensor_parallel.fx_mark_sharding(
-                out, ("dp", "tp", None), barrier=True)
-            tensor_parallel.fx_register_hook(
-                out, ("dp", None, None), barrier=True)
+            out = tensor_parallel.fx_mark_sharding(out, ("dp", "tp", None),
+                                                   barrier=True)
+            tensor_parallel.fx_register_hook(out, ("dp", None, None),
+                                             barrier=True)
 
         return out
 
 
 class CoreAttention(nn.Module):
-
     def __init__(self, config: LlamaConfig):
         super().__init__()
         self.config = config
@@ -103,13 +100,14 @@ class CoreAttention(nn.Module):
             attn_weights = attn_weights + attention_mask
             attn_weights = torch.max(
                 attn_weights,
-                torch.tensor(
-                    torch.finfo(attn_weights.dtype).min,
-                    device=attn_weights.device))
+                torch.tensor(torch.finfo(attn_weights.dtype).min,
+                             device=attn_weights.device))
 
         # upcast attention to fp32
-        attn_weights = nn.functional.softmax(
-            attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
+        attn_weights = nn.functional.softmax(attn_weights,
+                                             dim=-1,
+                                             dtype=torch.float32).to(
+                                                 query_states.dtype)
         attn_output = torch.einsum("abij,abjk->abik", attn_weights,
                                    value_states)
 
@@ -123,7 +121,6 @@ class CoreAttention(nn.Module):
 
 class LlamaAttention(nn.Module):
     """Multi-headed attention from "Attention Is All You Need" paper"""
-
     def __init__(self, config: LlamaConfig):
         super().__init__()
         self.config = config
@@ -136,16 +133,21 @@ class LlamaAttention(nn.Module):
             raise ValueError(
                 f"hidden_size must be divisible by num_heads (got `hidden_size`: {self.hidden_size}"
                 f" and `num_heads`: {self.num_heads}).")
-        self.q_proj = nn.Linear(
-            self.hidden_size, self.num_heads * self.head_dim, bias=False)
-        self.k_proj = nn.Linear(
-            self.hidden_size, self.num_heads * self.head_dim, bias=False)
-        self.v_proj = nn.Linear(
-            self.hidden_size, self.num_heads * self.head_dim, bias=False)
-        self.o_proj = nn.Linear(
-            self.num_heads * self.head_dim, self.hidden_size, bias=False)
+        self.q_proj = nn.Linear(self.hidden_size,
+                                self.num_heads * self.head_dim,
+                                bias=False)
+        self.k_proj = nn.Linear(self.hidden_size,
+                                self.num_heads * self.head_dim,
+                                bias=False)
+        self.v_proj = nn.Linear(self.hidden_size,
+                                self.num_heads * self.head_dim,
+                                bias=False)
+        self.o_proj = nn.Linear(self.num_heads * self.head_dim,
+                                self.hidden_size,
+                                bias=False)
         self.rotary_emb = LlamaRotaryEmbedding(
-            self.head_dim, max_position_embeddings=self.max_position_embeddings)
+            self.head_dim,
+            max_position_embeddings=self.max_position_embeddings)
         self.core_attn = CoreAttention(config)
 
         # mesh for TP
@@ -191,8 +193,8 @@ class LlamaAttention(nn.Module):
             hidden_states = tensor_parallel.fx_mark_sharding(
                 hidden_states, ("dp", None, None), barrier=True)
             tensor_parallel.fx_register_hook(hidden_states, ("dp", None, None))
-            tensor_parallel.fx_register_hook(
-                hidden_states, ("dp", "tp", None), barrier=True)
+            tensor_parallel.fx_register_hook(hidden_states, ("dp", "tp", None),
+                                             barrier=True)
 
         bsz, q_len, _ = hidden_states.size()
 
@@ -259,9 +261,8 @@ class LlamaAttention(nn.Module):
         if past_key_value is not None:
             kv_seq_len += past_key_value[0].shape[-2]
         cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
-        query_states, key_states = apply_rotary_pos_emb(query_states,
-                                                        key_states, cos, sin,
-                                                        position_ids)
+        query_states, key_states = apply_rotary_pos_emb(
+            query_states, key_states, cos, sin, position_ids)
         # [bsz, nh, t, hd]
 
         if past_key_value is not None:
@@ -272,7 +273,8 @@ class LlamaAttention(nn.Module):
         past_key_value = (key_states, value_states) if use_cache else None
 
         attn_output, attn_weights = self.core_attn(query_states, key_states,
-                                                   value_states, attention_mask)
+                                                   value_states,
+                                                   attention_mask)
         if self.sp_mesh_4d is not None:
             mark_sharding(attn_output, self.sp_mesh_4d, (0, 1, 2, 3))
             attn_output.register_hook(lambda grad: _grad_shard_sp_4d(grad))
@@ -287,8 +289,9 @@ class LlamaAttention(nn.Module):
             mark_sharding(attn_output, self.sp_mesh_3d, (0, 1, 2))
             attn_output.register_hook(lambda grad: _grad_shard_sp_3d(grad))
         elif tensor_parallel.get_tp_context().is_initialized():
-            attn_output = tensor_parallel.fx_mark_sharding(
-                attn_output, ("dp", None, "tp"), barrier=True)
+            attn_output = tensor_parallel.fx_mark_sharding(attn_output,
+                                                           ("dp", None, "tp"),
+                                                           barrier=True)
             tensor_parallel.fx_register_hook(attn_output, ("dp", None, "tp"))
 
         attn_output = self.o_proj(attn_output)
@@ -299,16 +302,16 @@ class LlamaAttention(nn.Module):
         # shard on sequence dim.
         if tensor_parallel.get_tp_context().enable_sp():
             tensor_parallel.fx_mark_sharding(attn_output, ("dp", None, None))
-            attn_output = tensor_parallel.fx_mark_sharding(
-                attn_output, ("dp", "tp", None), barrier=True)
-            tensor_parallel.fx_register_hook(
-                attn_output, ("dp", None, None), barrier=True)
+            attn_output = tensor_parallel.fx_mark_sharding(attn_output,
+                                                           ("dp", "tp", None),
+                                                           barrier=True)
+            tensor_parallel.fx_register_hook(attn_output, ("dp", None, None),
+                                             barrier=True)
 
         return attn_output, attn_weights, past_key_value
 
 
 class LlamaDecoderLayer(nn.Module):
-
     def __init__(self, config: LlamaConfig):
         super().__init__()
         self.hidden_size = config.hidden_size
@@ -318,10 +321,10 @@ class LlamaDecoderLayer(nn.Module):
             intermediate_size=config.intermediate_size,
             hidden_act=config.hidden_act,
         )
-        self.input_layernorm = LlamaRMSNorm(
-            config.hidden_size, eps=config.rms_norm_eps)
-        self.post_attention_layernorm = LlamaRMSNorm(
-            config.hidden_size, eps=config.rms_norm_eps)
+        self.input_layernorm = LlamaRMSNorm(config.hidden_size,
+                                            eps=config.rms_norm_eps)
+        self.post_attention_layernorm = LlamaRMSNorm(config.hidden_size,
+                                                     eps=config.rms_norm_eps)
 
     def forward(
         self,
@@ -380,13 +383,13 @@ class LlamaDecoderLayer(nn.Module):
         hidden_states = residual + hidden_states
         hidden_states = hidden_states.to(input_dtype)
 
-        outputs = (hidden_states,)
+        outputs = (hidden_states, )
 
         if output_attentions:
-            outputs += (self_attn_weights,)
+            outputs += (self_attn_weights, )
 
         if use_cache:
-            outputs += (present_key_value,)
+            outputs += (present_key_value, )
 
         return outputs
 
@@ -399,20 +402,19 @@ def flash_attn_fwd(
     past_key_value: Optional[Tuple[torch.Tensor]] = None,
     output_attentions: bool = False,
     use_cache: bool = False,
-) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
+) -> Tuple[torch.Tensor, Optional[torch.Tensor],
+           Optional[Tuple[torch.Tensor]]]:
     from torchacc.ops import flash_attn_varlen_xla
 
     bsz, q_len, _ = hidden_states.size()
 
-    query_states = (
-        self.q_proj(hidden_states).view(bsz, q_len, self.num_heads,
-                                        self.head_dim).transpose(1, 2))
-    key_states = (
-        self.k_proj(hidden_states).view(bsz, q_len, self.num_key_value_heads,
-                                        self.head_dim).transpose(1, 2))
-    value_states = (
-        self.v_proj(hidden_states).view(bsz, q_len, self.num_key_value_heads,
-                                        self.head_dim).transpose(1, 2))
+    query_states = (self.q_proj(hidden_states).view(bsz, q_len, self.num_heads,
+                                                    self.head_dim).transpose(
+                                                        1, 2))
+    key_states = (self.k_proj(hidden_states).view(
+        bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2))
+    value_states = (self.v_proj(hidden_states).view(
+        bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2))
 
     kv_seq_len = key_states.shape[-2]
     assert past_key_value is None, "past_key_value is not supported"
@@ -434,19 +436,20 @@ def flash_attn_fwd(
     k = einops.rearrange(key_states, "b h s ... -> (b s) h ...")
     v = einops.rearrange(value_states, "b h s ... -> (b s) h ...")
     max_s = q_len
-    cu_q_lens = torch.arange(
-        0, (bsz + 1) * q_len, step=q_len, dtype=torch.int32, device=q.device)
-    output = flash_attn_varlen_xla(
-        q,
-        k,
-        v,
-        cu_q_lens,
-        cu_q_lens,
-        max_s,
-        max_s,
-        dropout_p=0.0,
-        softmax_scale=None,
-        causal=True)
+    cu_q_lens = torch.arange(0, (bsz + 1) * q_len,
+                             step=q_len,
+                             dtype=torch.int32,
+                             device=q.device)
+    output = flash_attn_varlen_xla(q,
+                                   k,
+                                   v,
+                                   cu_q_lens,
+                                   cu_q_lens,
+                                   max_s,
+                                   max_s,
+                                   dropout_p=0.0,
+                                   softmax_scale=None,
+                                   causal=True)
     output = einops.rearrange(output, "(b s) ... -> b s ...", b=bsz)
 
     return self.o_proj(einops.rearrange(
@@ -465,7 +468,9 @@ def make_causal_mask(input_ids_shape: torch.Size,
     """Make causal mask used for bi-directional self-attention."""
     bsz, tgt_len = input_ids_shape
     # mask = torch.full((tgt_len, tgt_len), torch.tensor(torch.finfo(dtype).min, device=device), device=device)
-    mask = torch.full((tgt_len, tgt_len), torch.finfo(dtype).min, device=device)
+    mask = torch.full((tgt_len, tgt_len),
+                      torch.finfo(dtype).min,
+                      device=device)
     mask_cond = torch.arange(mask.size(-1), device=device)
     mask.masked_fill_(mask_cond < (mask_cond + 1).view(mask.size(-1), 1), 0)
     mask = mask.to(dtype)

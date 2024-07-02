@@ -19,7 +19,6 @@ from flashmodels.accelerators.accelerator import (Accelerator,
 
 
 class CUDAGLMAccelerator(Accelerator):
-
     def accelerate(self, model, loader):
         self.setup()
         torch.cuda.set_device(self.args.local_rank)
@@ -33,11 +32,10 @@ class CUDAGLMAccelerator(Accelerator):
         return model, loader
 
     def setup(self):
-        dist.init_process_group(
-            backend="nccl",
-            init_method="env://",
-            rank=self.args.global_rank,
-            world_size=self.args.world_size)
+        dist.init_process_group(backend="nccl",
+                                init_method="env://",
+                                rank=self.args.global_rank,
+                                world_size=self.args.world_size)
         dist.barrier()
 
     def get_glm_cls(self, class_name="GLMBlock"):
@@ -75,8 +73,8 @@ class CUDAGLMAccelerator(Accelerator):
             model._original_forward = model.forward
             model_forward_func = model.forward.__func__ if hasattr(
                 model.forward, "__func__") else model.forward
-            new_forward = torch.cuda.amp.autocast(dtype=dtype)(
-                model_forward_func)
+            new_forward = torch.cuda.amp.autocast(
+                dtype=dtype)(model_forward_func)
             model.forward = MethodType(new_forward, model)
             model.forward = MethodType(
                 convert_outputs_to_fp32(model.forward.__func__), model)
@@ -88,18 +86,18 @@ class CUDAGLMAccelerator(Accelerator):
 
         mixed_precision_policy = None
         if self.args.fp16 or self.args.bf16:
-            mixed_precision_policy = MixedPrecision(
-                param_dtype=dtype, reduce_dtype=dtype, buffer_dtype=dtype)
+            mixed_precision_policy = MixedPrecision(param_dtype=dtype,
+                                                    reduce_dtype=dtype,
+                                                    buffer_dtype=dtype)
 
         # Defalut using FULL_SHARD sharding strategy.
-        model = FSDP(
-            model,
-            sharding_strategy=ShardingStrategy.FULL_SHARD,
-            auto_wrap_policy=auto_wrap_policy,
-            device_id=torch.cuda.current_device(),
-            mixed_precision=mixed_precision_policy,
-            forward_prefetch=False,
-            backward_prefetch=None)
+        model = FSDP(model,
+                     sharding_strategy=ShardingStrategy.FULL_SHARD,
+                     auto_wrap_policy=auto_wrap_policy,
+                     device_id=torch.cuda.current_device(),
+                     mixed_precision=mixed_precision_policy,
+                     forward_prefetch=False,
+                     backward_prefetch=None)
 
         # This must be run after the model has been initialized with FSDP.
         if self.args.gc:
