@@ -26,7 +26,6 @@ except ImportError:
 
 
 class ACCLLAMAAccelerator(Accelerator):
-
     def __init__(self, args):
         super().__init__(args)
         devices_ids = np.arange(self.args.world_size)
@@ -101,7 +100,7 @@ class ACCLLAMAAccelerator(Accelerator):
                                                        self.args.sp)
 
         config = self.get_config(model)
-        model = ta.accelerate(model, config)
+        model = ta.accelerate(model, config=config)
 
         if self.args.tp_num > 1 and self.args.pp_num > 1:
             self.parallel_3d(model._get_underlay_model())
@@ -109,6 +108,9 @@ class ACCLLAMAAccelerator(Accelerator):
         return model, loader
 
     def get_config(self, model):
+        def _shard_output_callable(output, mesh):
+            if not isinstance(output, tuple) and output['logits'] is not None:
+                mark_sharding(output['logits'], mesh, ('fsdp', None, None))
 
         def get_split_points(llama, num_stages):
             split_points = []
@@ -144,6 +146,8 @@ class ACCLLAMAAccelerator(Accelerator):
         config.dist.fsdp.size = self.args.fsdp_num
         config.dist.fsdp.wrap_layer_cls = {"LlamaDecoderLayer"}
         config.dist.fsdp.flatten_parameters = not self.args.lora
+        config.dist.fsdp.use_spmd = self.args.spmd_fsdp
+        config.dist.fsdp.shard_output_callable = _shard_output_callable
 
         if self.args.tp_num > 1 and self.args.pp_num > 1:
             config.dist.topology = ["pp", "dp", "tp"]
@@ -159,11 +163,13 @@ class ACCLLAMAAccelerator(Accelerator):
                     ckpt_suffix=f"rank-*-of-*-step-{last_step}.pth")
             except:
                 print(
-                    f"Can not find checkpoint with step {last_step} to resume.")
+                    f"Can not find checkpoint with step {last_step} to resume."
+                )
                 return model
         xm.rendezvous("ckpt_consolidation")
-        ckpt_consolidated = torch.load(
-            osp.join(self.args.ckpt_dir, "_consolidated.pth"), mmap=True)
+        ckpt_consolidated = torch.load(osp.join(self.args.ckpt_dir,
+                                                "_consolidated.pth"),
+                                       mmap=True)
         model.load_state_dict(ckpt_consolidated["model"])
         return model
 
@@ -171,7 +177,6 @@ class ACCLLAMAAccelerator(Accelerator):
         """r DeepSeed-Ulysses.
         https://github.com/microsoft/DeepSpeed/tree/master/blogs/deepspeed-ulysses
         """
-
         def _grad_shard_sp(grad):
             mark_sharding(grad, self.sp_mesh_3d, (0, 1, 2))
             return grad
@@ -231,16 +236,15 @@ class ACCLLAMAAccelerator(Accelerator):
         context = tensor_parallel.get_tp_context()
 
         def _forward_dp(m, *args, **kwargs):
-
             def mark_shard(t):
                 if t.shape[0] == 1:
                     return t
-                r = (None,) * (len(t.shape) - 1)
+                r = (None, ) * (len(t.shape) - 1)
                 t = t.view(t.size())
                 # Prevent the sharding information of "dp" from being propagating by SPMD to the split,
                 # which will introduce a collective permute communication.
-                context.tp_mark_sharding(t, (None,) + r)
-                context.tp_mark_sharding(t, ("dp",) + r)
+                context.tp_mark_sharding(t, (None, ) + r)
+                context.tp_mark_sharding(t, ("dp", ) + r)
                 return t
 
             args = ta.utils.utils.apply_to_tensors(mark_shard, args)
@@ -260,8 +264,10 @@ class ACCLLAMAAccelerator(Accelerator):
                                           *args,
                                           old_specs=None,
                                           new_specs=None):
-            out = _forward_linear(
-                m, *args, old_specs=old_specs, new_specs=new_specs)
+            out = _forward_linear(m,
+                                  *args,
+                                  old_specs=old_specs,
+                                  new_specs=new_specs)
             # Add some hints to SPMD for sharding propagating
             context.tp_mark_sharding(out, ("dp", None, "tp"))
             return out
@@ -288,14 +294,12 @@ class ACCLLAMAAccelerator(Accelerator):
 
             # attn linear
             if self.args.use_zero2 or self.args.use_zero3:
-                tp_dp_linear = functools.partial(
-                    _forward_linear,
-                    old_specs=("tp", None),
-                    new_specs=("tp", "dp"))
-                dp_tp_linear = functools.partial(
-                    _forward_linear,
-                    old_specs=(None, "tp"),
-                    new_specs=("dp", "tp"))
+                tp_dp_linear = functools.partial(_forward_linear,
+                                                 old_specs=("tp", None),
+                                                 new_specs=("tp", "dp"))
+                dp_tp_linear = functools.partial(_forward_linear,
+                                                 old_specs=(None, "tp"),
+                                                 new_specs=("dp", "tp"))
                 tp_dp_linear_with_shard = functools.partial(
                     _forward_linear_with_sharding,
                     old_specs=("tp", None),
@@ -322,7 +326,6 @@ class ACCLLAMAAccelerator(Accelerator):
                 m.forward = MethodType(dp_tp_linear, m)
 
     def tensor_parallel(self, model):
-
         def _grad_ag(grad):
             # insert all-gather
             xm.optimization_barrier_([grad])
@@ -369,17 +372,15 @@ class ACCLLAMAAccelerator(Accelerator):
         col_dim = 1 if self.args.use_zero3 else None
         device = lazy_device()
         for decoder_layer in model.model.layers:
-            is_torchdistX_deferred_init = (
-                LOW_CPU_MEM_USAGE and any(
-                    fake.is_fake(param)
-                    for param in decoder_layer.parameters()))
+            is_torchdistX_deferred_init = (LOW_CPU_MEM_USAGE and any(
+                fake.is_fake(param) for param in decoder_layer.parameters()))
             if is_torchdistX_deferred_init:
                 deferred_init.materialize_module(decoder_layer)
             decoder_layer.to(device)
             # attn
             if hasattr(decoder_layer.self_attn, "_create_tp_mesh"):
-                decoder_layer.self_attn._create_tp_mesh(self.args.tp_num,
-                                                        self.args.dp_num)
+                decoder_layer.self_attn._create_tp_mesh(
+                    self.args.tp_num, self.args.dp_num)
             mark_sharding(decoder_layer.self_attn.q_proj.weight,
                           self.tp_row_mesh, (0, col_dim))
             mark_sharding(decoder_layer.self_attn.k_proj.weight,
@@ -447,14 +448,13 @@ class ACCLLAMAAccelerator(Accelerator):
                 decoder_layer.self_attn.core_attn = checkpoint_module(
                     decoder_layer.self_attn.core_attn)
 
-        is_torchdistX_deferred_init = (
-            LOW_CPU_MEM_USAGE and
-            any(fake.is_fake(param) for param in model.parameters()))
+        is_torchdistX_deferred_init = (LOW_CPU_MEM_USAGE and any(
+            fake.is_fake(param) for param in model.parameters()))
         if is_torchdistX_deferred_init:
             deferred_init.materialize_module(
                 model,
-                check_fn=lambda k: not isinstance(k, type(model.model.layers[0])
-                                                 ))
+                check_fn=lambda k: not isinstance(k, type(model.model.layers[0]
+                                                          )))
         model.to(device)
         return model
 
