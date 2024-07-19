@@ -14,7 +14,9 @@ The AutoSharding feature of FlashModels is based on SPMD. It can search for dist
 To enable the AutoSharding training process for the Llama-1B model on 4 GPUs, use the following code:
 
 ```bash
-PYTHONPATH=/root/stage-1/biglm \
+SCRIPTPATH=$(realpath $0 | xargs -n1 dirname)
+export PYTHONPATH=$PYTHONPATH:$SCRIPTPATH/../
+
 CUDA_VISIBLE_DEVICES=4,5,6,7 \
 XLA_AUTO_SPMD_MESH=4,1 \
 XLA_AUTO_SPMD=1 \
@@ -57,8 +59,10 @@ Four different configurations were evaluated: tensor parallelism (TP) + sequence
 
 ```bash
 # auto sharding
+SCRIPTPATH=$(realpath $0 | xargs -n1 dirname)
+export PYTHONPATH=$PYTHONPATH:$SCRIPTPATH/../
+
 ACC_FLASH_ATTN=0  \
-PYTHONPATH=/root/stage-1/biglm \
 CUDA_VISIBLE_DEVICES=4,5,6,7 \
 XLA_AUTO_SPMD_MESH=4,1 \
 XLA_AUTO_SPMD=1 \
