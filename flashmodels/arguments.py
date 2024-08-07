@@ -263,7 +263,7 @@ def parse():
 
     if args.model_type == "llama" and args.accelerator == 'acc' and (
             args.fp16 or args.bf16):
-        patch_llama(use_tp=(args.tp_num > 1))
+        patch_llama(fsdp_num=args.fsdp_num, use_tp=(args.tp_num > 1))
     if args.model_type == "gemma" and args.accelerator == 'acc':
         patch_gemma()
 
