@@ -74,6 +74,8 @@ class ACCLLAMAAccelerator(Accelerator):
         return model, loader
 
     def accelerate_internal(self, model, loader):
+        model.model.config.use_cache = False
+
         if self.args.sp_num > 1:
             device = lazy_device()
             model.to(device)
@@ -84,9 +86,6 @@ class ACCLLAMAAccelerator(Accelerator):
             model = self.tensor_parallel(model)
             return model, loader
 
-        if self.args.pp_num > 1:
-            # Prevent unnecessary model outputs
-            model.model.config.use_cache = False
         # TODO: support this in torchacc
         if self.args.resume_from_checkpoint:
             assert self.args.fsdp_num == self.args.world_size, \
