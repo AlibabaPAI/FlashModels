@@ -9,7 +9,7 @@ import transformers
 
 from flashmodels.logger import logger
 from flashmodels.patch.llama_model import (LlamaAttention, LlamaDecoderLayer,
-                                           LlamaMLP, flash_attn_fwd, spmd_flash_attn_fwd,
+                                           LlamaMLP, flash_attn_fwd,
                                            flash_attn_prep_mask,
                                            make_causal_mask)
 
@@ -38,10 +38,7 @@ def patch_llama(fsdp_num, use_tp=False):
     transformers.models.llama.modeling_llama._make_causal_mask = make_causal_mask
     if os.getenv("ACC_FLASH_ATTN", "0") == "1":
         transformers.models.llama.modeling_llama.LlamaModel._prepare_decoder_attention_mask = flash_attn_prep_mask
-        if os.getenv("XLA_USE_SPMD", "0") == "1":
-            transformers.models.llama.modeling_llama.LlamaAttention.forward = spmd_flash_attn_fwd
-        else:
-            transformers.models.llama.modeling_llama.LlamaAttention.forward = flash_attn_fwd
+        transformers.models.llama.modeling_llama.LlamaAttention.forward = flash_attn_fwd
     elif os.environ.get("ACC_LLAMA_TP") == "1":
         transformers.models.llama.modeling_llama.LlamaMLP = LlamaMLP
     if use_tp:
@@ -58,13 +55,15 @@ def patch_llama(fsdp_num, use_tp=False):
         def wrapper(*args, **kwargs):
             kwargs["attention_mask"] = None
             kwargs["fsdp_num"] = fsdp_num
+            kwargs["use_spmd"] = os.environ.get("XLA_USE_SPMD", "0") == "1"
             return func(*args, **kwargs)
 
         return wrapper
 
     # always attention_mask=None
-    transformers.models.llama.modeling_llama.LlamaAttention.forward = wrap_for_flash_attention(
-        transformers.models.llama.modeling_llama.LlamaAttention.forward)
+    if os.getenv("ACC_FLASH_ATTN", "0") == "1":
+        transformers.models.llama.modeling_llama.LlamaAttention.forward = wrap_for_flash_attention(
+            transformers.models.llama.modeling_llama.LlamaAttention.forward)
 
 
 def patch_gemma():
