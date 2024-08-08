@@ -38,7 +38,7 @@ def patch_llama(fsdp_num, use_tp=False):
     transformers.models.llama.modeling_llama._make_causal_mask = make_causal_mask
     if os.getenv("ACC_FLASH_ATTN", "0") == "1":
         transformers.models.llama.modeling_llama.LlamaModel._prepare_decoder_attention_mask = flash_attn_prep_mask
-        if fsdp_num > 1 and os.getenv("XLA_USE_SPMD", "0") == "1":
+        if os.getenv("XLA_USE_SPMD", "0") == "1":
             transformers.models.llama.modeling_llama.LlamaAttention.forward = spmd_flash_attn_fwd
         else:
             transformers.models.llama.modeling_llama.LlamaAttention.forward = flash_attn_fwd
