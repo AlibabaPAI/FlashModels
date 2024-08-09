@@ -6,6 +6,7 @@ from typing import Any
 
 import torch
 import transformers
+from packaging import version
 
 from flashmodels.logger import logger
 from flashmodels.patch.llama_model import (LlamaAttention, LlamaDecoderLayer,
@@ -34,7 +35,7 @@ def rewrite_load():
     exec(modified, transformers.modeling_utils.__dict__)
 
 
-def patch_llama(use_tp=False):
+def patch_llama(fsdp_num, use_tp=False):
     transformers.models.llama.modeling_llama._make_causal_mask = make_causal_mask
     if os.getenv("ACC_FLASH_ATTN", "0") == "1":
         transformers.models.llama.modeling_llama.LlamaModel._prepare_decoder_attention_mask = flash_attn_prep_mask
@@ -54,6 +55,9 @@ def patch_llama(use_tp=False):
     def wrap_for_flash_attention(func):
         def wrapper(*args, **kwargs):
             kwargs["attention_mask"] = None
+            if os.getenv("ACC_FLASH_ATTN", "0") == "1":
+                kwargs["fsdp_num"] = fsdp_num
+                kwargs["use_spmd"] = os.environ.get("XLA_USE_SPMD", "0") == "1"
             return func(*args, **kwargs)
 
         return wrapper
@@ -61,6 +65,13 @@ def patch_llama(use_tp=False):
     # always attention_mask=None
     transformers.models.llama.modeling_llama.LlamaAttention.forward = wrap_for_flash_attention(
         transformers.models.llama.modeling_llama.LlamaAttention.forward)
+
+    def update_causal_mask(self, *args, **kwargs):
+        # attention_mask is not supported in TorchAcc.
+        return None
+
+    if version.parse(transformers.__version__) >= version.parse('4.38'):
+        transformers.models.llama.modeling_llama.LlamaModel._update_causal_mask = update_causal_mask
 
 
 def patch_gemma():

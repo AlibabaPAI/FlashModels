@@ -6,6 +6,9 @@ import einops
 import numpy as np
 import torch
 import torch_xla.core.xla_model as xm
+import torch_xla.distributed.spmd as xs
+import transformers
+from packaging import version
 from torch import nn
 from torchacc.dist.tp import Mesh, mark_sharding
 from transformers.models.llama.configuration_llama import LlamaConfig
@@ -397,15 +400,17 @@ class LlamaDecoderLayer(nn.Module):
 def flash_attn_fwd(
     self,
     hidden_states: torch.Tensor,
+    fsdp_num: int = None,
+    use_spmd: bool = None,
     attention_mask: Optional[torch.Tensor] = None,
     position_ids: Optional[torch.Tensor] = None,
     past_key_value: Optional[Tuple[torch.Tensor]] = None,
     output_attentions: bool = False,
     use_cache: bool = False,
+    cache_position: Optional[torch.LongTensor] = None,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor],
            Optional[Tuple[torch.Tensor]]]:
-    from torchacc.ops import flash_attn_varlen_xla
-
+    from torchacc.ops import flash_attn_varlen_xla, spmd_flash_attn_varlen_xla
     bsz, q_len, _ = hidden_states.size()
 
     query_states = (self.q_proj(hidden_states).view(bsz, q_len, self.num_heads,
@@ -419,7 +424,14 @@ def flash_attn_fwd(
     kv_seq_len = key_states.shape[-2]
     assert past_key_value is None, "past_key_value is not supported"
 
-    cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
+    if version.parse(transformers.__version__) >= version.parse('4.36'):
+        cos, sin = self.rotary_emb(value_states, position_ids)
+        query_states, key_states = apply_rotary_pos_emb(
+            query_states, key_states, cos, sin)
+    else:
+        cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
+        query_states, key_states = apply_rotary_pos_emb(
+            query_states, key_states, cos, sin, position_ids)
     query_states, key_states = apply_rotary_pos_emb(query_states, key_states,
                                                     cos, sin, position_ids)
     assert not output_attentions, "output_attentions is not supported"
@@ -436,20 +448,44 @@ def flash_attn_fwd(
     k = einops.rearrange(key_states, "b h s ... -> (b s) h ...")
     v = einops.rearrange(value_states, "b h s ... -> (b s) h ...")
     max_s = q_len
-    cu_q_lens = torch.arange(0, (bsz + 1) * q_len,
-                             step=q_len,
-                             dtype=torch.int32,
-                             device=q.device)
-    output = flash_attn_varlen_xla(q,
-                                   k,
-                                   v,
-                                   cu_q_lens,
-                                   cu_q_lens,
-                                   max_s,
-                                   max_s,
-                                   dropout_p=0.0,
-                                   softmax_scale=None,
-                                   causal=True)
+
+    output = None
+    if use_spmd:
+        cu_q_lens = torch.arange(0, (bsz / fsdp_num + 1) * q_len,
+                                 step=q_len,
+                                 dtype=torch.int32,
+                                 device=q.device)
+        device_ids = np.array(range(fsdp_num))
+        mesh = xs.Mesh(device_ids, (fsdp_num, 1), ('fsdp', 'tensor'))
+        partition_spec = ('fsdp', None, None)
+        output = spmd_flash_attn_varlen_xla(q,
+                                            k,
+                                            v,
+                                            cu_q_lens,
+                                            cu_q_lens,
+                                            max_s,
+                                            max_s,
+                                            dropout_p=0.0,
+                                            softmax_scale=None,
+                                            causal=True,
+                                            mesh=mesh,
+                                            partition_spec=partition_spec)
+    else:
+        cu_q_lens = torch.arange(0, (bsz + 1) * q_len,
+                                 step=q_len,
+                                 dtype=torch.int32,
+                                 device=q.device)
+        output = flash_attn_varlen_xla(q,
+                                       k,
+                                       v,
+                                       cu_q_lens,
+                                       cu_q_lens,
+                                       max_s,
+                                       max_s,
+                                       dropout_p=0.0,
+                                       softmax_scale=None,
+                                       causal=True)
+
     output = einops.rearrange(output, "(b s) ... -> b s ...", b=bsz)
 
     return self.o_proj(einops.rearrange(
