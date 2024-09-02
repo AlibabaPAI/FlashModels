@@ -168,6 +168,10 @@ class Trainer(object):
             self.model.train()
             begin = time.time()
             for step, batch in enumerate(loader):
+                if self.args.dynamic:
+                    ta.mark_dynamic(batch["input_ids"], 1, self.args.max_seq_length)
+                    ta.mark_dynamic(batch["labels"], 1, self.args.max_seq_length)
+                    ta.mark_dynamic(batch["attention_mask"], 1, self.args.max_seq_length)
                 begin = _step(begin, step + 1, batch)
                 max_step += 1
                 if max_step == self.args.max_train_steps * self.gradient_accumulation_steps:
@@ -261,6 +265,10 @@ class Trainer(object):
             self.model.train()
             begin = time.time()
             for step, batch in enumerate(loader):
+                if self.args.dynamic:
+                    ta.mark_dynamic(batch["input_ids"], 1, self.args.max_seq_length)
+                    ta.mark_dynamic(batch["labels"], 1, self.args.max_seq_length)
+                    ta.mark_dynamic(batch["attention_mask"], 1, self.args.max_seq_length)
                 begin = _step(begin, step + 1, batch)
                 max_step += 1
                 if max_step == self.args.max_train_steps * self.gradient_accumulation_steps:

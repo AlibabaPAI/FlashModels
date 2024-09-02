@@ -3,8 +3,9 @@ set -ex
 
 SCRIPTPATH=$(realpath $0 | xargs -n1 dirname)
 export PYTHONPATH=$PYTHONPATH:$SCRIPTPATH/../
+source $SCRIPTPATH/disc.sh
 
-MBS=48              # micro batch size
+MBS=4              # micro batch size
 SEQLEN=2048         # max sequence length
 NUM_EPOCHS=1        # number epoches
 MAX_STEPS=-1        # max steps
@@ -19,6 +20,7 @@ PP_NUM=1            # pipeline parallelism number
 TP_NUM=1            # tensor parallelism number
 FSDP_NUM=1          # fsdp number
 FLASH_ATTN=1        # enable flash-attn-2
+DYNAMIC=0
 DATA=./data/wikitext-2-raw-v1.json               # data name or path
 MODEL_NAME_OR_PATH="./hf_models/config/llama-1b" # model name or path
 
@@ -129,6 +131,10 @@ while [[ $# -gt 0 ]]; do
         FLASH_ATTN=0
         shift
         ;;
+        --dynamic)
+        DYNAMIC=1
+        shift
+        ;;
         --log_interval)
         LOG_INTERVAL="$2"
         shift
@@ -149,6 +155,7 @@ OPTION_ARGS=""
 [[ "$GC" -eq 1 ]] && OPTION_ARGS+="--gc "
 [[ "$BF16" -eq 1 ]] && OPTION_ARGS+="--bf16 "
 [[ "$FP16" -eq 1 ]] && OPTION_ARGS+="--fp16 "
+[[ "$DYNAMIC" -eq 1 ]] && OPTION_ARGS+="--dynamic "
 
 if [ "$ACCELERATOR" == "cuda" ]; then
     [ "$PP_NUM" -gt 1 ] && echo "Error: Pipeline Parallelism is not supported for cuda accelerator." && exit 1
@@ -165,10 +172,11 @@ if [[ "$ACCELERATOR" == "acc" && "FLASH_ATTN" -eq 1 && ( "$FP16" -eq 1 || "$BF16
     export ACC_FLASH_ATTN=1
 fi
 
-export XLA_PERSISTENT_CACHE_PATH=./compiled_cache/
+# export XLA_PERSISTENT_CACHE_PATH=./compiled_cache/
+export ACC_FLASH_ATTN=0
 
 MODEL_NAME=$(basename $MODEL_NAME_OR_PATH)
-JOB_NAME="${MODEL_NAME}_${ACCELERATOR}_bs${MBS}_seqlen${SEQLEN}_bf16-${BF16}_fp16-${FP16}_pp${PP_NUM}_tp${TP_NUM}_fsdp${FSDP_NUM}"
+JOB_NAME="${MODEL_NAME}_${ACCELERATOR}_dynamic${DYNAMIC}_bs${MBS}_seqlen${SEQLEN}_bf16-${BF16}_fp16-${FP16}_pp${PP_NUM}_tp${TP_NUM}_fsdp${FSDP_NUM}"
 
 
 [ -z "$RANK" ] && RANK=0

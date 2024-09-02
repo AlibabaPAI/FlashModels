@@ -88,6 +88,9 @@ def parse():
                         type=int,
                         default=1,
                         help="Pipeline Parallel Number")
+    parser.add_argument("--dynamic",
+                        action="store_true",
+                        help="Run model in dynamic mode.")
     parser.add_argument("--fp16",
                         action="store_true",
                         help="Run model in fp16 mode.")
