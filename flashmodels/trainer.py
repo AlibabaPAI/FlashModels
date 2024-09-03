@@ -76,9 +76,9 @@ class Trainer(object):
              step,
              epoch,
              loss=0.0,
-             maybe_mark_step=(lambda *args: None)):
+             maybe_sync=(lambda *args: None)):
         if self.args.log_loss:
-            maybe_mark_step()
+            maybe_sync()
         else:
             loss = 0.0
 
@@ -144,7 +144,7 @@ class Trainer(object):
                 self.optimizer.zero_grad()
             if step % (self.args.log_interval *
                        self.gradient_accumulation_steps) == 0:
-                begin = self._log(begin, step, epoch, total_loss, ta.mark_step)
+                begin = self._log(begin, step, epoch, total_loss, ta.sync)
             if step > last_step and len(self.args.ckpt_dir) > 0 and step % (
                     self.args.ckpt_freq) == 0:
                 self._acc_save(step)
@@ -171,7 +171,7 @@ class Trainer(object):
                 begin = _step(begin, step + 1, batch)
                 max_step += 1
                 if max_step == self.args.max_train_steps * self.gradient_accumulation_steps:
-                    ta.mark_step()
+                    ta.sync()
                     break
                 self._call_profiler(step)
 
@@ -237,7 +237,7 @@ class Trainer(object):
                 self.optimizer.zero_grad()
             if step % (self.args.log_interval *
                        self.gradient_accumulation_steps) == 0:
-                begin = self._log(begin, step, epoch, total_loss, ta.mark_step)
+                begin = self._log(begin, step, epoch, total_loss, ta.sync)
             if step > last_step and len(self.args.ckpt_dir) > 0 and step % (
                     self.args.ckpt_freq) == 0:
                 self._acc_save(step)
@@ -264,7 +264,7 @@ class Trainer(object):
                 begin = _step(begin, step + 1, batch)
                 max_step += 1
                 if max_step == self.args.max_train_steps * self.gradient_accumulation_steps:
-                    ta.mark_step()
+                    ta.sync()
                     break
 
                 self._call_profiler(step)
@@ -273,7 +273,7 @@ class Trainer(object):
 
     def _acc_save(self, step):
         xm.rendezvous("saving_model")
-        ta.mark_step()
+        ta.sync()
         ckpt = {
             "model": self.model.state_dict(),
             "shard_metadata": self.model.get_shard_metadata(),
@@ -310,7 +310,7 @@ class Trainer(object):
         ta.save(step,
                 osp.join(self.args.ckpt_dir, "MAX_STEP"),
                 master_only=True)
-        ta.mark_step()
+        ta.sync()
 
         # TODO(wenting.swt): clean expired checkpoints.
 
