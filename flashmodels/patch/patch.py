@@ -54,7 +54,7 @@ def patch_llama(fsdp_num, use_tp=False):
     # Set the attention_mask in LlamaAttention to None to match the pattern of FlashAttentionRewriter.
     def wrap_for_flash_attention(func):
         def wrapper(*args, **kwargs):
-            kwargs["attention_mask"] = None
+            # kwargs["attention_mask"] = None
             if os.getenv("ACC_FLASH_ATTN", "0") == "1":
                 kwargs["fsdp_num"] = fsdp_num
                 kwargs["use_spmd"] = os.environ.get("XLA_USE_SPMD", "0") == "1"
@@ -68,7 +68,7 @@ def patch_llama(fsdp_num, use_tp=False):
 
     def update_causal_mask(self, *args, **kwargs):
         # attention_mask is not supported in TorchAcc.
-        return None
+        return args[0]
 
     if version.parse(transformers.__version__) >= version.parse('4.38'):
         transformers.models.llama.modeling_llama.LlamaModel._update_causal_mask = update_causal_mask

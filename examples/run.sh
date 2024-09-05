@@ -19,7 +19,7 @@ PP_NUM=1            # pipeline parallelism number
 TP_NUM=1            # tensor parallelism number
 FSDP_NUM=1          # fsdp number
 FLASH_ATTN=1        # enable flash-attn-2
-DATA=./data/wikitext-2-raw-v1.json               # data name or path
+DATA=./data/alpaca_data_sample.json               # data name or path
 MODEL_NAME_OR_PATH="./hf_models/config/llama-1b" # model name or path
 
 
@@ -165,7 +165,7 @@ if [[ "$ACCELERATOR" == "acc" && "FLASH_ATTN" -eq 1 && ( "$FP16" -eq 1 || "$BF16
     export ACC_FLASH_ATTN=1
 fi
 
-export XLA_PERSISTENT_CACHE_PATH=./compiled_cache/
+# export XLA_PERSISTENT_CACHE_PATH=./compiled_cache/
 
 MODEL_NAME=$(basename $MODEL_NAME_OR_PATH)
 JOB_NAME="${MODEL_NAME}_${ACCELERATOR}_bs${MBS}_seqlen${SEQLEN}_bf16-${BF16}_fp16-${FP16}_pp${PP_NUM}_tp${TP_NUM}_fsdp${FSDP_NUM}"

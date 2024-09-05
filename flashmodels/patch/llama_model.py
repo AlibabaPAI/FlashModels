@@ -444,49 +444,49 @@ def flash_attn_fwd(
     # See https://github.com/HazyResearch/flash-attention/blob/main/flash_attn/flash_attention.py
     # if attention_mask is not None:
     #     value_states = value_states * attention_mask.unsqueeze(1).unsqueeze(-1)
-    q = einops.rearrange(query_states, "b h s ... -> (b s) h ...")
-    k = einops.rearrange(key_states, "b h s ... -> (b s) h ...")
-    v = einops.rearrange(value_states, "b h s ... -> (b s) h ...")
+    q = einops.rearrange(query_states, "b h s ... -> b s h ...")
+    k = einops.rearrange(key_states, "b h s ... -> b s h ...")
+    v = einops.rearrange(value_states, "b h s ... -> b s h ...")
     max_s = q_len
 
     output = None
-    if use_spmd:
-        cu_q_lens = torch.arange(0, (bsz / fsdp_num + 1) * q_len,
-                                 step=q_len,
-                                 dtype=torch.int32,
-                                 device=q.device)
-        device_ids = np.array(range(fsdp_num))
-        mesh = xs.Mesh(device_ids, (fsdp_num, 1), ('fsdp', 'tensor'))
-        partition_spec = ('fsdp', None, None)
-        output = spmd_flash_attn_varlen_xla(q,
-                                            k,
-                                            v,
-                                            cu_q_lens,
-                                            cu_q_lens,
-                                            max_s,
-                                            max_s,
-                                            dropout_p=0.0,
-                                            softmax_scale=None,
-                                            causal=True,
-                                            mesh=mesh,
-                                            partition_spec=partition_spec)
+    if 0:
+        pass
+        # cu_q_lens = torch.arange(0, (bsz / fsdp_num + 1) * q_len,
+        #                          step=q_len,
+        #                          dtype=torch.int32,
+        #                          device=q.device)
+        # device_ids = np.array(range(fsdp_num))
+        # mesh = xs.Mesh(device_ids, (fsdp_num, 1), ('fsdp', 'tensor'))
+        # partition_spec = ('fsdp', None, None)
+        # output = spmd_flash_attn_varlen_xla(q,
+        #                                     k,
+        #                                     v,
+        #                                     cu_q_lens,
+        #                                     cu_q_lens,
+        #                                     max_s,
+        #                                     max_s,
+        #                                     dropout_p=0.0,
+        #                                     softmax_scale=None,
+        #                                     causal=True,
+        #                                     mesh=mesh,
+        #                                     partition_spec=partition_spec)
     else:
-        cu_q_lens = torch.arange(0, (bsz + 1) * q_len,
-                                 step=q_len,
-                                 dtype=torch.int32,
-                                 device=q.device)
+        # cu_q_lens = torch.arange(0, (bsz + 1) * q_len,
+        #                          step=q_len,
+        #                          dtype=torch.int32,
+        #                          device=q.device)
+        attention_mask = attention_mask.reshape(bsz, q_len)
+        print(q.shape, k.shape, attention_mask.shape)
         output = flash_attn_varlen_xla(q,
                                        k,
                                        v,
-                                       cu_q_lens,
-                                       cu_q_lens,
-                                       max_s,
-                                       max_s,
+                                       attention_mask=attention_mask,
                                        dropout_p=0.0,
                                        softmax_scale=None,
                                        causal=True)
 
-    output = einops.rearrange(output, "(b s) ... -> b s ...", b=bsz)
+    # output = einops.rearrange(output, "(b s) ... -> b s ...", b=bsz)
 
     return self.o_proj(einops.rearrange(
         output, "b s h d -> b s (h d)")), None, past_key_value
