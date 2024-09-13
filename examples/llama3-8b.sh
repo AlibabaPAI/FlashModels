@@ -1,8 +1,3 @@
-#!/bin/bash
-# [Note]: Commands in this script should be run under FlashModels Folder
-# bash ../scripts/launch-training-torchacc.sh
-
-
 # ========= seq_len=2048 mbs=1 python-fsdp=8 =========
 ./examples/run.sh --model ./hf_models/config/llama-3-8b --accelerator acc --mbs 1 --fsdp 8 --max_seq_length 2048
 
