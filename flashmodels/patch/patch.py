@@ -7,20 +7,24 @@ from typing import Any
 import torch
 import transformers
 from packaging import version
+import torchacc.ops.context_parallel as context_parallel
 
 from flashmodels.logger import logger
 from flashmodels.patch.llama_model import (LlamaAttention, LlamaDecoderLayer,
                                            LlamaMLP, flash_attn_fwd,
                                            flash_attn_prep_mask,
-                                           make_causal_mask)
+                                           make_causal_mask, LlamaModel)
 
 
 def rewrite_load():
     """Rewrite `torch.load` in `from_pretrain` in case to use mmap to reduce the CPU
     memory pressure of loading multiple copies of data under multiple processes"""
     source = inspect.getsource(transformers.modeling_utils)
-    modified = re.sub(r"torch\.load\((?![^)]*mmap[^)]*\))([^)]*)\)",
-                      r"torch.load(\g<1>, mmap=True)", source)
+    modified = re.sub(
+        r"torch\.load\((?![^)]*mmap[^)]*\))([^)]*)\)",
+        r"torch.load(\g<1>, mmap=True)"
+        if version.parse(transformers.__version__) <= version.parse('4.36')
+        else r"torch.load(\g<1> mmap=True)", source)
     modified = re.sub(r"partial\(torch.load,(?![^)]*mmap[^)]*\))([^)]*)\)",
                       r"partial(torch.load,\g<1>, mmap=True)", modified)
     if (int(os.environ.get("LOCAL_RANK", 0)) == 0):
@@ -35,10 +39,17 @@ def rewrite_load():
     exec(modified, transformers.modeling_utils.__dict__)
 
 
-def patch_llama(fsdp_num, use_tp=False):
+def patch_llama(fsdp_num, ulysses_sp_num, use_tp=False):
     transformers.models.llama.modeling_llama._make_causal_mask = make_causal_mask
+
+    if ulysses_sp_num > 1:
+        transformers.models.llama.LlamaModel = LlamaModel
+        os.environ["CP_SIZE"] = str(ulysses_sp_num)
+
     if os.getenv("ACC_FLASH_ATTN", "0") == "1":
+        # print("patch flash attention")
         transformers.models.llama.modeling_llama.LlamaModel._prepare_decoder_attention_mask = flash_attn_prep_mask
+        LlamaModel._prepare_decoder_attention_mask = flash_attn_prep_mask
         transformers.models.llama.modeling_llama.LlamaAttention.forward = flash_attn_fwd
     elif os.environ.get("ACC_LLAMA_TP") == "1":
         transformers.models.llama.modeling_llama.LlamaMLP = LlamaMLP
@@ -50,18 +61,21 @@ def patch_llama(fsdp_num, use_tp=False):
     # (wenting.swt): Delete me when merged in transformers
     if bool(int(os.environ.get("LOW_CPU_MEM_USAGE", "0"))):
         rewrite_load()
+    
 
     # Set the attention_mask in LlamaAttention to None to match the pattern of FlashAttentionRewriter.
     def wrap_for_flash_attention(func):
         def wrapper(*args, **kwargs):
             kwargs["attention_mask"] = None
+            # print("call wrapper")
             if os.getenv("ACC_FLASH_ATTN", "0") == "1":
                 kwargs["fsdp_num"] = fsdp_num
+                kwargs["ulysses_sp_num"] = ulysses_sp_num
                 kwargs["use_spmd"] = os.environ.get("XLA_USE_SPMD", "0") == "1"
             return func(*args, **kwargs)
 
         return wrapper
-
+            
     # always attention_mask=None
     transformers.models.llama.modeling_llama.LlamaAttention.forward = wrap_for_flash_attention(
         transformers.models.llama.modeling_llama.LlamaAttention.forward)

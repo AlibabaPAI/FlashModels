@@ -210,6 +210,7 @@ def parse():
                         help="Print loss when logging steps")
 
     args = parser.parse_args()
+    args.use_flash_attn = os.getenv("ACC_FLASH_ATTN", "0") == "1"
 
     if args.lora:
         patch_peft()
@@ -263,7 +264,7 @@ def parse():
 
     if args.model_type == "llama" and args.accelerator == 'acc' and (
             args.fp16 or args.bf16):
-        patch_llama(fsdp_num=args.fsdp_num, use_tp=(args.tp_num > 1))
+        patch_llama(fsdp_num=args.fsdp_num, ulysses_sp_num=args.sp_num, use_tp=(args.tp_num > 1))
     if args.model_type == "gemma" and args.accelerator == 'acc':
         patch_gemma()
 

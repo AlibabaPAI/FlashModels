@@ -61,7 +61,7 @@ def get_hf_dataset_loader(tokenizer, args):
         # + config.get_mesh().get_fsdp_rank()
         args.disable_train_sampler = True
     if (not args.disable_train_sampler) and (data_num_replicas > 1) \
-            and (not args.tp_num > 1) and (not args.spmd_fsdp):
+            and (not args.tp_num > 1) and (not args.spmd_fsdp) and (not args.sp_num > 1):
         train_sampler = torch.utils.data.distributed.DistributedSampler(
             train_dataset,
             num_replicas=(1 if args.tp_num > 1 else data_num_replicas),

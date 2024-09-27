@@ -44,9 +44,9 @@ class ACCLLAMAAccelerator(Accelerator):
             self.tp_mesh = Mesh(devices_ids,
                                 (self.args.dp_num, self.args.tp_num, 1))
         # Ulysses SP
-        self.sp_mesh_3d = None
-        if self.args.sp_num > 1:
-            self.sp_mesh_3d = Mesh(devices_ids, (1, self.args.sp_num, 1))
+        # self.sp_mesh_3d = None
+        # if self.args.sp_num > 1:
+        #     self.sp_mesh_3d = Mesh(devices_ids, (1, self.args.sp_num, 1))
 
     def accelerate(self, model, loader):
         if self.args.lora:
@@ -76,11 +76,11 @@ class ACCLLAMAAccelerator(Accelerator):
     def accelerate_internal(self, model, loader):
         model.model.config.use_cache = False
 
-        if self.args.sp_num > 1:
-            device = lazy_device()
-            model.to(device)
-            model = self.ulysses(model)
-            return model, loader
+        # if self.args.sp_num > 1:
+        #     device = lazy_device()
+        #     model.to(device)
+        #     model = self.ulysses(model)
+        #     return model, loader
 
         if self.args.tp_num > 1 and self.args.pp_num == 1:
             model = self.tensor_parallel(model)
@@ -148,6 +148,8 @@ class ACCLLAMAAccelerator(Accelerator):
         config.dist.fsdp.use_spmd = self.args.spmd_fsdp
         config.dist.fsdp.shard_output_callable = _shard_output_callable
 
+        config.dist.sp.size = self.args.sp_num
+    
         if self.args.tp_num > 1 and self.args.pp_num > 1:
             config.dist.topology = ["pp", "dp", "tp"]
 
