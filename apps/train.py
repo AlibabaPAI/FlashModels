@@ -1,10 +1,24 @@
+import os
+
 import torch
+import torch_xla
+import torch_xla.core.xla_model as xm
 
 from flashmodels import Builder, Trainer, accelerate, arguments
 
 
 def train():
-    torch.manual_seed(101)
+    seed = 101
+    torch.manual_seed(seed)
+    torch.use_deterministic_algorithms(True)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
+    os.environ['TF_CUDNN_DETERMINISTIC'] = '1'
+    os.environ['TF_DETERMINISTIC_OPS'] = '1'
+    xm.set_rng_state(seed)
+    torch_xla._XLAC._xla_set_use_full_mat_mul_precision(
+        use_full_mat_mul_precision=True)
 
     # parse args
     args = arguments.parse()

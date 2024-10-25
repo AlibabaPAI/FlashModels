@@ -11,12 +11,14 @@ MAX_STEPS=-1        # max steps
 GA=1                # gradients accumulation number
 LOG_INTERVAL=1      # log interval
 GC=0                # gradients checkpoint
+GC_CNT=0
 FP16=0              # float16
 BF16=1              # bfloat16
 ACCELERATOR="acc"   # accelerator type
 DP_NUM=1            # data parallelism number
 PP_NUM=1            # pipeline parallelism number
 TP_NUM=1            # tensor parallelism number
+SP_NUM=1            # ulysses sequence parallelism number
 FSDP_NUM=1          # fsdp number
 FLASH_ATTN=1        # enable flash-attn-2
 DATA=./data/wikitext-2-raw-v1.json               # data name or path
@@ -110,6 +112,16 @@ while [[ $# -gt 0 ]]; do
         GC=1
         shift
         ;;
+        --gc_cnt)
+        GC_CNT="$2"
+        shift
+        shift
+        ;;
+        --sp_num)
+        SP_NUM="$2"
+        shift
+        shift
+        ;;
         --bf16)
         BF16=1
         FP16=0
@@ -147,6 +159,7 @@ done
 
 OPTION_ARGS=""
 [[ "$GC" -eq 1 ]] && OPTION_ARGS+="--gc "
+[[ "$GC_CNT" -gt 0 ]] && OPTION_ARGS+="--gc_cnt $GC_CNT "
 [[ "$BF16" -eq 1 ]] && OPTION_ARGS+="--bf16 "
 [[ "$FP16" -eq 1 ]] && OPTION_ARGS+="--fp16 "
 
@@ -168,22 +181,31 @@ fi
 export XLA_PERSISTENT_CACHE_PATH=./compiled_cache/
 
 MODEL_NAME=$(basename $MODEL_NAME_OR_PATH)
-JOB_NAME="${MODEL_NAME}_${ACCELERATOR}_bs${MBS}_seqlen${SEQLEN}_bf16-${BF16}_fp16-${FP16}_pp${PP_NUM}_tp${TP_NUM}_fsdp${FSDP_NUM}"
+JOB_NAME="${MODEL_NAME}_${ACCELERATOR}_bs${MBS}_seqlen${SEQLEN}_bf16-${BF16}_fp16-${FP16}_pp${PP_NUM}_tp${TP_NUM}_fsdp${FSDP_NUM}_spmd-${XLA_USE_SPMD}_gc-${GC}_fa-${FLASH_ATTN}"
 
 
 [ -z "$RANK" ] && RANK=0
 [ -z "$WORLD_SIZE" ] && WORLD_SIZE=1
 [ -z "$MASTER_ADDR" ] && MASTER_ADDR=127.0.0.1
-[ -z "$MASTER_PORT" ] && MASTER_PORT=9010
+[ -z "$MASTER_PORT" ] && MASTER_PORT=9011
 
 if [ "$WORLD_SIZE" -eq 1 ]; then
-    NPROC_PER_NODE=$((FSDP_NUM * TP_NUM * PP_NUM * DP_NUM))
+    NPROC_PER_NODE=$((FSDP_NUM * TP_NUM * PP_NUM * DP_NUM ))
     [ "$NPROC_PER_NODE" -eq 0 ] && echo "Error: NPROC_PER_NODE is zero." && exit 1
 else
     NPROC_PER_NODE=$(nvidia-smi -L | wc -l)
 fi
 
-mkdir -p log
+# 根据DATA来设置log目录，如果DATA中有alpaca，则log目录为log-alpaca，如果DATA中有wikitext，则log目录为log-wiki
+LOG_DIR="log"
+if [[ $DATA == *"alpaca"* ]]; then
+    LOG_DIR="log-alpaca"
+elif [[ $DATA == *"wikitext"* ]]; then
+    LOG_DIR="log-wiki"
+fi
+
+
+mkdir -p $LOG_DIR
 
 torchrun --nproc_per_node $NPROC_PER_NODE \
         --nnodes $WORLD_SIZE \
@@ -200,8 +222,9 @@ torchrun --nproc_per_node $NPROC_PER_NODE \
         --max_train_steps $MAX_STEPS \
         --pp_num $PP_NUM \
         --tp_num $TP_NUM \
+        --sp_num $SP_NUM \
         --fsdp_num $FSDP_NUM \
         --gradient_accumulation_steps $GA \
         $OPTION_ARGS \
         $OTHER_ARGS \
-        --log_interval $LOG_INTERVAL 2>&1 | tee ./log/${JOB_NAME}.log ; exit ${PIPESTATUS[0]}
+        --log_interval $LOG_INTERVAL 2>&1 | tee ./${LOG_DIR}/${JOB_NAME}.log ; exit ${PIPESTATUS[0]}

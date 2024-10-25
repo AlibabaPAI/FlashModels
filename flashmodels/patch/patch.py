@@ -43,7 +43,7 @@ def patch_llama(fsdp_num, ulysses_sp_num, use_tp=False):
     transformers.models.llama.modeling_llama._make_causal_mask = make_causal_mask
 
     if ulysses_sp_num > 1:
-        transformers.models.llama.LlamaModel = LlamaModel
+        transformers.models.llama.LlamaModel.forward = LlamaModel.forward
         os.environ["CP_SIZE"] = str(ulysses_sp_num)
 
     if os.getenv("ACC_FLASH_ATTN", "0") == "1":
