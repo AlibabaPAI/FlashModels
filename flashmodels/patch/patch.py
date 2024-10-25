@@ -35,8 +35,13 @@ def rewrite_load():
     exec(modified, transformers.modeling_utils.__dict__)
 
 
-def patch_llama(fsdp_num, use_tp=False):
+def patch_llama(fsdp_num, ulysses_sp_num, use_tp=False):
     transformers.models.llama.modeling_llama._make_causal_mask = make_causal_mask
+
+    if ulysses_sp_num > 1:
+        transformers.models.llama.LlamaModel.forward = LlamaModel.forward
+        os.environ["CP_SIZE"] = str(ulysses_sp_num)
+
     if os.getenv("ACC_FLASH_ATTN", "0") == "1":
         transformers.models.llama.modeling_llama.LlamaModel._prepare_decoder_attention_mask = flash_attn_prep_mask
         transformers.models.llama.modeling_llama.LlamaAttention.forward = flash_attn_fwd
@@ -55,8 +60,10 @@ def patch_llama(fsdp_num, use_tp=False):
     def wrap_for_flash_attention(func):
         def wrapper(*args, **kwargs):
             kwargs["attention_mask"] = None
+            # print("call wrapper")
             if os.getenv("ACC_FLASH_ATTN", "0") == "1":
                 kwargs["fsdp_num"] = fsdp_num
+                kwargs["ulysses_sp_num"] = ulysses_sp_num
                 kwargs["use_spmd"] = os.environ.get("XLA_USE_SPMD", "0") == "1"
             return func(*args, **kwargs)
 
