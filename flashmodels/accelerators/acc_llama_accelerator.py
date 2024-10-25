@@ -10,7 +10,7 @@ import torchacc as ta
 from torch_xla.distributed.fsdp import consolidate_sharded_model_checkpoints
 from torchacc import lazy_device
 from torchacc.dist.tp import Mesh, mark_sharding
-from torchacc.utils.checkpoint import checkpoint_module
+from torchacc.utils.checkpoint import checkpoint_module, gradient_checkpoint
 
 import flashmodels.tensor_parallel as tensor_parallel
 from flashmodels.accelerators.accelerator import (Accelerator,
@@ -28,7 +28,7 @@ except ImportError:
 class ACCLLAMAAccelerator(Accelerator):
     def __init__(self, args):
         super().__init__(args)
-        devices_ids = np.arange(self.args.world_size)
+        devices_ids = np.arange(self.args.world_size) # 4 (0,1) (2,3)
         # init mesh for SPMD
         # TP
         self.tp_row_mesh = None
@@ -44,9 +44,11 @@ class ACCLLAMAAccelerator(Accelerator):
             self.tp_mesh = Mesh(devices_ids,
                                 (self.args.dp_num, self.args.tp_num, 1))
         # Ulysses SP
-        # self.sp_mesh_3d = None
-        # if self.args.sp_num > 1:
-        #     self.sp_mesh_3d = Mesh(devices_ids, (1, self.args.sp_num, 1))
+        self.sp_mesh_3d = None
+        if self.args.sp_num > 1 and self.args.spmd_fsdp:# 2
+            self.sp_mesh_3d = Mesh(devices_ids, ((int)(self.args.world_size / self.args.sp_num), self.args.sp_num, 1)) # [2,2]
+            # self.sp_mesh_3d = Mesh(devices_ids, (1, self.args.sp_num, 1))
+            # [4,1] -> 
 
     def accelerate(self, model, loader):
         if self.args.lora:
@@ -76,11 +78,11 @@ class ACCLLAMAAccelerator(Accelerator):
     def accelerate_internal(self, model, loader):
         model.model.config.use_cache = False
 
-        # if self.args.sp_num > 1:
-        #     device = lazy_device()
-        #     model.to(device)
-        #     model = self.ulysses(model)
-        #     return model, loader
+        if self.args.sp_num > 1 and self.args.spmd_fsdp:
+            device = lazy_device()
+            model.to(device)
+            model = self.ulysses(model)
+            # return model, loader
 
         if self.args.tp_num > 1 and self.args.pp_num == 1:
             model = self.tensor_parallel(model)
@@ -108,8 +110,10 @@ class ACCLLAMAAccelerator(Accelerator):
 
     def get_config(self, model):
         def _shard_output_callable(output, mesh):
-            if not isinstance(output, tuple) and output['logits'] is not None:
-                mark_sharding(output['logits'], mesh, ('fsdp', None, None))
+            # if not isinstance(output, tuple) and output['logits'] is not None:
+                # print(f"output_logits: {output['logits'].shape}")
+                # mark_sharding(output['logits'], mesh, ('fsdp', None, None))
+            pass
 
         def get_split_points(llama, num_stages):
             split_points = []
@@ -179,19 +183,19 @@ class ACCLLAMAAccelerator(Accelerator):
         https://github.com/microsoft/DeepSpeed/tree/master/blogs/deepspeed-ulysses
         """
         def _grad_shard_sp(grad):
-            mark_sharding(grad, self.sp_mesh_3d, (0, 1, 2))
+            mark_sharding(grad, self.sp_mesh_3d, (0, 1, None))
             return grad
 
         def _forward_linear(m, *args):
             h = args[0]
             out = torch.einsum("bij,jk->bik", h, m.weight.T)
-            mark_sharding(out, self.sp_mesh_3d, (0, 1, 2))
+            mark_sharding(out, self.sp_mesh_3d, (0, 1, None))
             out.register_hook(lambda grad: _grad_shard_sp(grad))
             return out
 
         def _forward_sp(m, *args, **kwargs):
             h = args[0] if len(args) > 0 else kwargs.get("hidden_states")
-            mark_sharding(h, self.sp_mesh_3d, (0, 1, 2))
+            mark_sharding(h, self.sp_mesh_3d, (0, 1, None))
             h.register_hook(lambda grad: _grad_shard_sp(grad))
             if len(args) > 0:
                 as_list = list(args)
@@ -366,12 +370,15 @@ class ACCLLAMAAccelerator(Accelerator):
             out_h = output[0] if isinstance(output, tuple) else output
             # shard on sequence dim.
             mark_sharding(out_h, self.tp_mesh, (0, 1, 2))
-            out_h.register_hook(lambda grad: _grad_ag(grad))
+            if out_h.requires_grad:
+                out_h.register_hook(lambda grad: _grad_ag(grad))
             return output
 
         row_dim = 0 if self.args.use_zero3 else None
         col_dim = 1 if self.args.use_zero3 else None
+        # TODO: 切分Embedding，判断显存是否大
         device = lazy_device()
+        gc_cnt = self.args.gc_cnt
         for decoder_layer in model.model.layers:
             is_torchdistX_deferred_init = (LOW_CPU_MEM_USAGE and any(
                 fake.is_fake(param) for param in decoder_layer.parameters()))
@@ -446,8 +453,9 @@ class ACCLLAMAAccelerator(Accelerator):
                 decoder_layer.mlp.forward = \
                     MethodType(_forward_ag_sp, decoder_layer.mlp)
             if self.args.gc:
-                decoder_layer.self_attn.core_attn = checkpoint_module(
-                    decoder_layer.self_attn.core_attn)
+                if gc_cnt > 0:
+                    decoder_layer = checkpoint_module(decoder_layer)
+                    gc_cnt -= 1
 
         is_torchdistX_deferred_init = (LOW_CPU_MEM_USAGE and any(
             fake.is_fake(param) for param in model.parameters()))

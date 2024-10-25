@@ -100,9 +100,9 @@ class LlamaModel(LlamaPreTrainedModel):
             position_ids = cache_position.unsqueeze(0)
 
         if os.getenv('CP_SIZE', None):
-            position_ids = context_parallel.slice_forward(
+            position_ids = context_parallel.split_forward_gather_backward(
                 position_ids, 1 , context_parallel.get_intra_cp_process_group())
-            inputs_embeds = context_parallel.slice_forward(
+            inputs_embeds = context_parallel.split_forward_gather_backward(
                 inputs_embeds, 1 , context_parallel.get_intra_cp_process_group())
 
         causal_mask = self._update_causal_mask(
@@ -461,9 +461,12 @@ class LlamaAttention(nn.Module):
         value_states = self.v_proj(hidden_states)
 
         if self.tp_col_mesh is not None:
-            query_states.register_hook(lambda grad: _grad_shard_tp(grad))
-            key_states.register_hook(lambda grad: _grad_shard_tp(grad))
-            value_states.register_hook(lambda grad: _grad_shard_tp(grad))
+            if query_states.requires_grad:
+                query_states.register_hook(lambda grad: _grad_shard_tp(grad))
+            if key_states.requires_grad:
+                key_states.register_hook(lambda grad: _grad_shard_tp(grad))
+            if value_states.requires_grad:
+                value_states.register_hook(lambda grad: _grad_shard_tp(grad))
         elif tensor_parallel.get_tp_context().is_initialized():
             tensor_parallel.fx_register_hook(query_states, ("dp", None, "tp"))
             tensor_parallel.fx_register_hook(key_states, ("dp", None, "tp"))
@@ -490,7 +493,7 @@ class LlamaAttention(nn.Module):
         query_states = query_states.transpose(1, 2)
         key_states = key_states.transpose(1, 2)
         value_states = value_states.transpose(1, 2)
-
+        print(f"{query_states.size()=} {key_states.size()=} {value_states.size()=}")
         if self.sp_mesh_4d is not None:
             # insert all-to-all
             mark_sharding(query_states, self.sp_mesh_4d, (0, 1, 2, 3))
@@ -503,9 +506,15 @@ class LlamaAttention(nn.Module):
         kv_seq_len = key_states.shape[-2]
         if past_key_value is not None:
             kv_seq_len += past_key_value[0].shape[-2]
-        cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
-        query_states, key_states = apply_rotary_pos_emb(
-            query_states, key_states, cos, sin, position_ids)
+            
+        if version.parse(transformers.__version__) >= version.parse('4.36'):
+            cos, sin = self.rotary_emb(value_states, position_ids=position_ids)
+            query_states, key_states = apply_rotary_pos_emb(
+                query_states, key_states, cos, sin)
+        else:
+            cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
+            query_states, key_states = apply_rotary_pos_emb(
+                query_states, key_states, cos, sin, position_ids)
         # [bsz, nh, t, hd]
 
         if past_key_value is not None:
@@ -515,7 +524,40 @@ class LlamaAttention(nn.Module):
 
         past_key_value = (key_states, value_states) if use_cache else None
 
-        attn_output, attn_weights = self.core_attn(query_states, key_states,
+        from torchacc.ops import spmd_flash_attn_varlen_xla
+        attn_output = None
+        attn_weights = None
+        if os.getenv("ACC_FLASH_ATTN", "0") == "1":
+            query_states = einops.rearrange(query_states,
+                                        "b h s ... -> (b s) h ...")
+            key_states = einops.rearrange(key_states, "b h s ... -> (b s) h ...")
+            value_states = einops.rearrange(value_states,
+                                            "b h s ... -> (b s) h ...")
+            max_s = q_len
+            cu_q_lens = torch.arange(0, (bsz / self.dp_num + 1) * q_len,
+                                step=q_len,
+                                dtype=torch.int32,
+                                device=query_states.device)
+            device_ids = np.array(range(self.dp_num * self.tp_num))
+            mesh = xs.Mesh(device_ids, (self.dp_num, self.tp_num), ('fsdp', 'tensor'))
+            partition_spec = ('fsdp', None, None)
+            attn_output = spmd_flash_attn_varlen_xla(
+                query_states,
+                key_states,
+                value_states,
+                cu_q_lens,
+                cu_q_lens,
+                max_s,
+                max_s,
+                dropout_p=0.0,
+                softmax_scale=None,
+                causal=True,
+                mesh = mesh,
+                partition_spec = partition_spec                
+            )
+            attn_output = einops.rearrange(attn_output, "(b s) ... -> b s ...", b=bsz)
+        else:
+            attn_output, attn_weights = self.core_attn(query_states, key_states,
                                                    value_states,
                                                    attention_mask)
         if self.sp_mesh_4d is not None:
@@ -526,11 +568,13 @@ class LlamaAttention(nn.Module):
         attn_output = attn_output.reshape(bsz, q_len, self.hidden_size)
         if self.tp_col_mesh is not None:
             mark_sharding(attn_output, self.tp_col_mesh, (0, 1, 2))
-            attn_output.register_hook(lambda grad: _grad_shard_tp(grad))
+            if attn_output.requires_grad:
+                attn_output.register_hook(lambda grad: _grad_shard_tp(grad))
         elif self.sp_mesh_3d is not None:
             # insert all-to-all
             mark_sharding(attn_output, self.sp_mesh_3d, (0, 1, 2))
-            attn_output.register_hook(lambda grad: _grad_shard_sp_3d(grad))
+            if attn_output.requires_grad:
+                attn_output.register_hook(lambda grad: _grad_shard_sp_3d(grad))
         elif tensor_parallel.get_tp_context().is_initialized():
             attn_output = tensor_parallel.fx_mark_sharding(attn_output,
                                                            ("dp", None, "tp"),
@@ -555,7 +599,7 @@ class LlamaAttention(nn.Module):
 
 
 class LlamaDecoderLayer(nn.Module):
-    def __init__(self, config: LlamaConfig):
+    def __init__(self, config: LlamaConfig, layer_idx: int):
         super().__init__()
         self.hidden_size = config.hidden_size
         self.self_attn = LlamaAttention(config=config)
@@ -577,6 +621,7 @@ class LlamaDecoderLayer(nn.Module):
         past_key_value: Optional[Tuple[torch.Tensor]] = None,
         output_attentions: Optional[bool] = False,
         use_cache: Optional[bool] = False,
+        cache_position: Optional[torch.LongTensor] = None,
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor,
                                                  torch.FloatTensor]]]:
         """
@@ -642,6 +687,7 @@ def flash_attn_fwd(
     hidden_states: torch.Tensor,
     fsdp_num: int = None,
     ulysses_sp_num: int = None,
+    tp_num: int = None,
     use_spmd: bool = None,
     attention_mask: Optional[torch.Tensor] = None,
     position_ids: Optional[torch.Tensor] = None,
@@ -651,6 +697,10 @@ def flash_attn_fwd(
     cache_position: Optional[torch.LongTensor] = None,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor],
            Optional[Tuple[torch.Tensor]]]:
+
+    if tp_num > 1:
+        # dp + tp + sp + zero3
+        pass
 
     if ulysses_sp_num > 1 and not use_spmd:
         bsz, q_len, _ = hidden_states.size()
