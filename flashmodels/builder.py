@@ -60,9 +60,13 @@ class Builder(object):
     def build_model_from_ckpt(self):
         config = AutoConfig.from_pretrained(self.args.model_name_or_path,
                                             trust_remote_code=True)
-        return self._init_fn(AutoModelForCausalLM.from_config,
-                             config,
-                             trust_remote_code=True)
+
+        model = self._init_fn(
+            AutoModelForCausalLM.from_config,
+            config,
+            #  attn_implementation="flash_attention_2" if self.args.use_flash_attn else "eager",
+            trust_remote_code=True)
+        return model
 
     def build_model_from_pretrain(self):
         has_weight = False
@@ -75,10 +79,12 @@ class Builder(object):
             # from hugging face
             has_weight = True
         if has_weight:
-            return self._init_fn(AutoModelForCausalLM.from_pretrained,
-                                 self.args.model_name_or_path,
-                                 cache_dir=self.args.cache_dir,
-                                 trust_remote_code=True)
+            return self._init_fn(
+                AutoModelForCausalLM.from_pretrained,
+                self.args.model_name_or_path,
+                #  attn_implementation="flash_attention_2" if self.args.use_flash_attn else "eager",
+                cache_dir=self.args.cache_dir,
+                trust_remote_code=True)
         if self.args.local_rank == 0:
             logger.warning("Model weights are not been set, because" \
                            " there is no .bin file in path %s." %    \
