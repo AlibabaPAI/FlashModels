@@ -33,13 +33,13 @@ class Builder(object):
         self.args = args
         self._init_fn = lambda func, *args, **kwargs: func(*args, **kwargs)
         if LOW_CPU_MEM_USAGE:
-            if self.args.sp_num == 1:
-                self._init_fn = lambda func, *args, **kwargs: \
-                    deferred_init.deferred_init(func, *args, **kwargs)
-            else:
-                logger.warning(
-                    "LOW_CPU_MEM_USAGE with lazy init does not support for ulysses now."
-                )
+            # if self.args.sp_num == 1:
+            self._init_fn = lambda func, *args, **kwargs: \
+                deferred_init.deferred_init(func, *args, **kwargs)
+            # else:
+            #     logger.warning(
+            #         "LOW_CPU_MEM_USAGE with lazy init does not support for ulysses now."
+            #     )
 
     def build_model_dataloader(self):
         if self.args.resume_from_checkpoint and \
