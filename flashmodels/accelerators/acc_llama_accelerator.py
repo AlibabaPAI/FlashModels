@@ -190,13 +190,15 @@ class ACCLLAMAAccelerator(Accelerator):
             h = args[0]
             out = torch.einsum("bij,jk->bik", h, m.weight.T)
             mark_sharding(out, self.sp_mesh_3d, (0, 1, None))
-            out.register_hook(lambda grad: _grad_shard_sp(grad))
+            if out.requires_grad:
+                out.register_hook(lambda grad: _grad_shard_sp(grad))
             return out
 
         def _forward_sp(m, *args, **kwargs):
             h = args[0] if len(args) > 0 else kwargs.get("hidden_states")
             mark_sharding(h, self.sp_mesh_3d, (0, 1, None))
-            h.register_hook(lambda grad: _grad_shard_sp(grad))
+            if h.requires_grad:
+                h.register_hook(lambda grad: _grad_shard_sp(grad))
             if len(args) > 0:
                 as_list = list(args)
                 as_list[0] = h
@@ -206,6 +208,7 @@ class ACCLLAMAAccelerator(Accelerator):
             output = m._original_forward(*args, **kwargs)
             return output
 
+        gc_cnt = self.args.gc_cnt
         model.lm_head.forward = MethodType(_forward_linear, model.lm_head)
         for decoder_layer in model.model.layers:
             if hasattr(decoder_layer.self_attn, "_create_sp_mesh"):
@@ -231,9 +234,10 @@ class ACCLLAMAAccelerator(Accelerator):
                 MethodType(_forward_linear, decoder_layer.mlp.up_proj)
             decoder_layer.mlp.down_proj.forward = \
                 MethodType(_forward_linear, decoder_layer.mlp.down_proj)
-            if self.args.gc:
-                decoder_layer.self_attn.core_attn = checkpoint_module(
-                    decoder_layer.self_attn.core_attn)
+            # if self.args.gc:
+            #     if gc_cnt > 0:
+            #         decoder_layer = checkpoint_module(decoder_layer)
+            #         gc_cnt -= 1
 
         return model
 

@@ -774,6 +774,10 @@ def flash_attn_fwd(
         device_ids = np.array(range(fsdp_num))
         mesh = xs.Mesh(device_ids, (fsdp_num, 1), ('fsdp', 'tensor'))
         partition_spec = ('fsdp', None, None)
+        if ulysses_sp_num > 1:
+            mesh = xs.Mesh(device_ids, (fsdp_num // ulysses_sp_num, ulysses_sp_num), ('dp', 'sp'))
+            partition_spec = ('dp', 'sp', None)
+        
         output = spmd_flash_attn_varlen_xla(q,
                                             k,
                                             v,
