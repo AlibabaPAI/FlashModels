@@ -493,7 +493,7 @@ class LlamaAttention(nn.Module):
         query_states = query_states.transpose(1, 2)
         key_states = key_states.transpose(1, 2)
         value_states = value_states.transpose(1, 2)
-        print(f"{query_states.size()=} {key_states.size()=} {value_states.size()=}")
+
         if self.sp_mesh_4d is not None:
             # insert all-to-all
             mark_sharding(query_states, self.sp_mesh_4d, (0, 1, 2, 3))
@@ -715,8 +715,10 @@ def flash_attn_fwd(
         output = cp_func(q, 
                             k,
                             v,
-                            torch.tensor([q_len]),
-                            torch.tensor([q_len]),
+                            # torch.tensor([q_len * ulysses_sp_num]),
+                            # torch.tensor([q_len * ulysses_sp_num]),
+                            None,
+                            None, # Use fixed len FA
                             dropout_p = 0.0,
                             softmax_scale=None,
                             causal=True,
