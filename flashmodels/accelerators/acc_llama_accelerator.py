@@ -35,14 +35,18 @@ class ACCLLAMAAccelerator(Accelerator):
         self.tp_col_mesh = None
         self.tp_mesh = None
         if self.args.tp_num > 1 and not self.args.pp_num > 1:
+            dp_num = self.args.dp_num
+            if self.args.fsdp_num > 1:
+                dp_num = self.args.fsdp_num
+
             new_dids = devices_ids.reshape(
-                self.args.dp_num, self.args.tp_num).transpose().flatten()
+                dp_num, self.args.tp_num).transpose().flatten()
             self.tp_row_mesh = Mesh(new_dids,
-                                    (self.args.tp_num, self.args.dp_num))
+                                    (self.args.tp_num, dp_num))
             self.tp_col_mesh = Mesh(devices_ids,
-                                    (self.args.dp_num, self.args.tp_num))
+                                    (dp_num, self.args.tp_num))
             self.tp_mesh = Mesh(devices_ids,
-                                (self.args.dp_num, self.args.tp_num, 1))
+                                (dp_num, self.args.tp_num, 1))
         # Ulysses SP
         self.sp_mesh_3d = None
         if self.args.sp_num > 1 and self.args.spmd_fsdp:# 2
@@ -86,7 +90,7 @@ class ACCLLAMAAccelerator(Accelerator):
 
         if self.args.tp_num > 1 and self.args.pp_num == 1:
             model = self.tensor_parallel(model)
-            return model, loader
+            # return model, loader
 
         # TODO: support this in torchacc
         if self.args.resume_from_checkpoint:
@@ -406,14 +410,15 @@ class ACCLLAMAAccelerator(Accelerator):
             is_torchdistX_deferred_init = (LOW_CPU_MEM_USAGE and any(
                 fake.is_fake(param) for param in decoder_layer.parameters()))
             if is_torchdistX_deferred_init:
-                print("materialize module")
                 deferred_init.materialize_module(decoder_layer)
             decoder_layer.to(device)
-            print(f"after materialize decoder layer fake: {any(fake.is_fake(param) for param in decoder_layer.parameters())}")
             # attn
             if hasattr(decoder_layer.self_attn, "_create_tp_mesh"):
+                dp_num = self.args.dp_num
+                if self.args.fsdp_num > 1:
+                    dp_num = self.args.fsdp_num
                 decoder_layer.self_attn._create_tp_mesh(
-                    self.args.tp_num, self.args.dp_num)
+                    self.args.tp_num, dp_num)
             mark_sharding(decoder_layer.self_attn.q_proj.weight,
                           self.tp_row_mesh, (0, col_dim))
             mark_sharding(decoder_layer.self_attn.k_proj.weight,
