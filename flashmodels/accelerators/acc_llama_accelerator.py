@@ -211,11 +211,16 @@ class ACCLLAMAAccelerator(Accelerator):
         device = lazy_device()
         model.lm_head.forward = MethodType(_forward_linear, model.lm_head)
         for decoder_layer in model.model.layers:
-            is_torchdistX_deferred_init = (LOW_CPU_MEM_USAGE and any(
-                fake.is_fake(param) for param in decoder_layer.parameters()))
-            if is_torchdistX_deferred_init:
-                deferred_init.materialize_module(decoder_layer)
-            decoder_layer.to(device)
+            # is_torchdistX_deferred_init = (LOW_CPU_MEM_USAGE and any(
+            #     fake.is_fake(param) for param in decoder_layer.parameters()))
+            # if is_torchdistX_deferred_init:
+            #     print("materialize module")
+            #     deferred_init.materialize_module(decoder_layer)
+            # decoder_layer.to(device)
+            # # print(f"after materialize decoder layer fake: {any(fake.is_fake(param) for param in decoder_layer.parameters())}")
+            # for param in decoder_layer.parameters():
+            #     print(f"param device: {param.device}")
+
 
             if hasattr(decoder_layer.self_attn, "_create_sp_mesh"):
                 decoder_layer.self_attn._create_sp_mesh(self.args.sp_num)
@@ -240,18 +245,21 @@ class ACCLLAMAAccelerator(Accelerator):
                 MethodType(_forward_linear, decoder_layer.mlp.up_proj)
             decoder_layer.mlp.down_proj.forward = \
                 MethodType(_forward_linear, decoder_layer.mlp.down_proj)
+            
+            # mark_sharding(decoder_layer.self_attn.q_proj.weight,
+            #               self.sp_mesh_3d, (0, 1))
             # if self.args.gc:
             #     if gc_cnt > 0:
             #         decoder_layer = checkpoint_module(decoder_layer)
             #         gc_cnt -= 1
-        is_torchdistX_deferred_init = (LOW_CPU_MEM_USAGE and any(
-            fake.is_fake(param) for param in model.parameters()))
-        if is_torchdistX_deferred_init:
-            deferred_init.materialize_module(
-                model,
-                check_fn=lambda k: not isinstance(k, type(model.model.layers[0]
-                                                          )))
-        model.to(device)
+        # is_torchdistX_deferred_init = (LOW_CPU_MEM_USAGE and any(
+        #     fake.is_fake(param) for param in model.parameters()))
+        # if is_torchdistX_deferred_init:
+        #     deferred_init.materialize_module(
+        #         model,
+        #         check_fn=lambda k: not isinstance(k, type(model.model.layers[0]
+        #                                                   )))
+        # model.to(device)
         return model
 
     def parallel_3d(self, model):
