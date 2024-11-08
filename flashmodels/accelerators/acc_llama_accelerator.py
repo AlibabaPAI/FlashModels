@@ -17,6 +17,7 @@ from flashmodels.accelerators.accelerator import (Accelerator,
                                                   AcceleratorFactory)
 from flashmodels.logger import logger
 from flashmodels.utils import get_last_step_from_ckpt
+import torch_xla
 
 LOW_CPU_MEM_USAGE = bool(int(os.environ.get("LOW_CPU_MEM_USAGE", "0")))
 try:
@@ -114,10 +115,8 @@ class ACCLLAMAAccelerator(Accelerator):
 
     def get_config(self, model):
         def _shard_output_callable(output, mesh):
-            # if not isinstance(output, tuple) and output['logits'] is not None:
-                # print(f"output_logits: {output['logits'].shape}")
-                # mark_sharding(output['logits'], mesh, ('fsdp', None, None))
-            pass
+            if not isinstance(output, tuple) and output['logits'] is not None and torch_xla._XLAC._get_xla_sharding_spec(output['logits']) == '':
+                mark_sharding(output['logits'], mesh, ('fsdp', None, None))
 
         def get_split_points(llama, num_stages):
             split_points = []
@@ -307,7 +306,7 @@ class ACCLLAMAAccelerator(Accelerator):
             return out
 
         assert os.environ.get("ACC_LLAMA_MLP") != "1"
-        dp_dim = "dp" if self.args.use_zero3 else None
+        dp_dim = "dp" if (self.args.use_zero3 or self.args.fsdp_num > 1) else None
         for name, m in model.named_modules():
             # attn
             if "q_proj" in name:
@@ -327,7 +326,7 @@ class ACCLLAMAAccelerator(Accelerator):
                 context.tp_mark_sharding(m.weight, (dp_dim, "tp"))
 
             # attn linear
-            if self.args.use_zero2 or self.args.use_zero3:
+            if self.args.use_zero2 or self.args.use_zero3 or self.args.fsdp_num > 1:
                 tp_dp_linear = functools.partial(_forward_linear,
                                                  old_specs=("tp", None),
                                                  new_specs=("tp", "dp"))
@@ -403,8 +402,8 @@ class ACCLLAMAAccelerator(Accelerator):
                 out_h.register_hook(lambda grad: _grad_ag(grad))
             return output
 
-        row_dim = 0 if self.args.use_zero3 else None
-        col_dim = 1 if self.args.use_zero3 else None
+        row_dim = 0 if (self.args.use_zero3 or self.args.fsdp_num > 1) else None
+        col_dim = 1 if self.args.use_zero3 or self.args.fsdp_num > 1 else None
         # TODO: 切分Embedding，判断显存是否大
         device = lazy_device()
         gc_cnt = self.args.gc_cnt
