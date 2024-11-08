@@ -767,7 +767,7 @@ def flash_attn_fwd(
 
     output = None
     if use_spmd:
-        cu_q_lens = torch.arange(0, (bsz / fsdp_num + 1) * q_len,
+        cu_q_lens = torch.arange(0, (bsz / (fsdp_num // ulysses_sp_num) + 1) * q_len,
                                  step=q_len,
                                  dtype=torch.int32,
                                  device=q.device)
