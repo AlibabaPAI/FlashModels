@@ -293,13 +293,14 @@ class LlamaAttention(nn.Module):
             value_states = einops.rearrange(value_states,
                                             "b h s ... -> (b s) h ...")
             max_s = q_len
+            # print(f"{bsz=} {self.dp_num=}")
             cu_q_lens = torch.arange(0, (bsz / self.dp_num + 1) * q_len,
                                 step=q_len,
                                 dtype=torch.int32,
                                 device=query_states.device)
             device_ids = np.array(range(self.dp_num * self.tp_num))
             mesh = xs.Mesh(device_ids, (self.dp_num, self.tp_num), ('fsdp', 'tensor'))
-            partition_spec = ('fsdp', None, None)
+            partition_spec = ('fsdp', 'tensor', None) # q  ((bs * seq_len), num_head, hidden_dim)
             attn_output = spmd_flash_attn_varlen_xla(
                 query_states,
                 key_states,
