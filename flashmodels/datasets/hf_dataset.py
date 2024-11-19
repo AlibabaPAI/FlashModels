@@ -55,7 +55,7 @@ def get_hf_dataset_loader(tokenizer, args):
     train_sampler = None
     data_num_replicas = args.fsdp_num * args.dp_num // args.sp_num
     # data_num_replicas = args.fsdp_num * args.dp_num
-    
+
     if args.pp_num > 1:
         # disable sampler for now
         # the rank below should be:

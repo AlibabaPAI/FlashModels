@@ -5,6 +5,7 @@ from types import MethodType
 
 import numpy as np
 import torch
+import torch_xla
 import torch_xla.core.xla_model as xm
 import torchacc as ta
 from torch_xla.distributed.fsdp import consolidate_sharded_model_checkpoints
@@ -17,7 +18,6 @@ from flashmodels.accelerators.accelerator import (Accelerator,
                                                   AcceleratorFactory)
 from flashmodels.logger import logger
 from flashmodels.utils import get_last_step_from_ckpt
-import torch_xla
 
 LOW_CPU_MEM_USAGE = bool(int(os.environ.get("LOW_CPU_MEM_USAGE", "0")))
 try:
@@ -29,7 +29,7 @@ except ImportError:
 class ACCLLAMAAccelerator(Accelerator):
     def __init__(self, args):
         super().__init__(args)
-        devices_ids = np.arange(self.args.world_size) # 4 (0,1) (2,3)
+        devices_ids = np.arange(self.args.world_size)  # 4 (0,1) (2,3)
         # init mesh for SPMD
         # TP
         self.tp_row_mesh = None
@@ -42,18 +42,17 @@ class ACCLLAMAAccelerator(Accelerator):
 
             new_dids = devices_ids.reshape(
                 dp_num, self.args.tp_num).transpose().flatten()
-            self.tp_row_mesh = Mesh(new_dids,
-                                    (self.args.tp_num, dp_num))
-            self.tp_col_mesh = Mesh(devices_ids,
-                                    (dp_num, self.args.tp_num))
-            self.tp_mesh = Mesh(devices_ids,
-                                (dp_num, self.args.tp_num, 1))
+            self.tp_row_mesh = Mesh(new_dids, (self.args.tp_num, dp_num))
+            self.tp_col_mesh = Mesh(devices_ids, (dp_num, self.args.tp_num))
+            self.tp_mesh = Mesh(devices_ids, (dp_num, self.args.tp_num, 1))
         # Ulysses SP
         self.sp_mesh_3d = None
-        if self.args.sp_num > 1 and self.args.spmd_fsdp:# 2
-            self.sp_mesh_3d = Mesh(devices_ids, ((int)(self.args.world_size / self.args.sp_num), self.args.sp_num, 1)) # [2,2]
+        if self.args.sp_num > 1 and self.args.spmd_fsdp:  # 2
+            self.sp_mesh_3d = Mesh(
+                devices_ids, ((int)(self.args.world_size / self.args.sp_num),
+                              self.args.sp_num, 1))  # [2,2]
             # self.sp_mesh_3d = Mesh(devices_ids, (1, self.args.sp_num, 1))
-            # [4,1] -> 
+            # [4,1] ->
 
     def accelerate(self, model, loader):
         if self.args.lora:
@@ -115,7 +114,9 @@ class ACCLLAMAAccelerator(Accelerator):
 
     def get_config(self, model):
         def _shard_output_callable(output, mesh):
-            if not isinstance(output, tuple) and output['logits'] is not None and torch_xla._XLAC._get_xla_sharding_spec(output['logits']) == '':
+            if not isinstance(output, tuple) and output[
+                    'logits'] is not None and torch_xla._XLAC._get_xla_sharding_spec(
+                        output['logits']) == '':
                 mark_sharding(output['logits'], mesh, ('fsdp', None, None))
 
         def get_split_points(llama, num_stages):
@@ -222,7 +223,6 @@ class ACCLLAMAAccelerator(Accelerator):
             # for param in decoder_layer.parameters():
             #     print(f"param device: {param.device}")
 
-
             if hasattr(decoder_layer.self_attn, "_create_sp_mesh"):
                 decoder_layer.self_attn._create_sp_mesh(self.args.sp_num)
 
@@ -246,7 +246,7 @@ class ACCLLAMAAccelerator(Accelerator):
                 MethodType(_forward_linear, decoder_layer.mlp.up_proj)
             decoder_layer.mlp.down_proj.forward = \
                 MethodType(_forward_linear, decoder_layer.mlp.down_proj)
-            
+
             # mark_sharding(decoder_layer.self_attn.q_proj.weight,
             #               self.sp_mesh_3d, (0, 1))
             # if self.args.gc:
@@ -304,7 +304,8 @@ class ACCLLAMAAccelerator(Accelerator):
             return out
 
         assert os.environ.get("ACC_LLAMA_MLP") != "1"
-        dp_dim = "dp" if (self.args.use_zero3 or self.args.fsdp_num > 1) else None
+        dp_dim = "dp" if (self.args.use_zero3
+                          or self.args.fsdp_num > 1) else None
         for name, m in model.named_modules():
             # attn
             if "q_proj" in name:
@@ -400,7 +401,8 @@ class ACCLLAMAAccelerator(Accelerator):
                 out_h.register_hook(lambda grad: _grad_ag(grad))
             return output
 
-        row_dim = 0 if (self.args.use_zero3 or self.args.fsdp_num > 1) else None
+        row_dim = 0 if (self.args.use_zero3
+                        or self.args.fsdp_num > 1) else None
         col_dim = 1 if self.args.use_zero3 or self.args.fsdp_num > 1 else None
         # TODO: 切分Embedding，判断显存是否大
         device = lazy_device()

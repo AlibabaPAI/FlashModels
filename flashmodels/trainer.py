@@ -250,8 +250,11 @@ class Trainer(object):
                 and not self.args.pp_num > 1) or (self.args.fsdp_num > 1
                                                   and self.args.spmd_fsdp):
             devices_ids = np.arange(self.args.world_size)
-            dp_num = self.args.dp_num if self.args.dp_num > 1 else int(self.args.fsdp_num / self.args.sp_num)
-            mesh = Mesh(devices_ids, (dp_num, self.args.tp_num, self.args.sp_num), ("x", "y", "z"))
+            dp_num = self.args.dp_num if self.args.dp_num > 1 else int(
+                self.args.fsdp_num / self.args.sp_num)
+            mesh = Mesh(devices_ids,
+                        (dp_num, self.args.tp_num, self.args.sp_num),
+                        ("x", "y", "z"))
             loader = pl.MpDeviceLoader(self.loader,
                                        self.device,
                                        input_sharding=xs.ShardingSpec(
