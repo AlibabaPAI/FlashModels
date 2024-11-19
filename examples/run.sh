@@ -196,14 +196,7 @@ else
     NPROC_PER_NODE=$(nvidia-smi -L | wc -l)
 fi
 
-# 根据DATA来设置log目录，如果DATA中有alpaca，则log目录为log-alpaca，如果DATA中有wikitext，则log目录为log-wiki
 LOG_DIR="log"
-if [[ $DATA == *"alpaca"* ]]; then
-    LOG_DIR="log-alpaca"
-elif [[ $DATA == *"wikitext"* ]]; then
-    LOG_DIR="log-wiki"
-fi
-
 
 mkdir -p $LOG_DIR
 
