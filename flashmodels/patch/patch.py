@@ -64,7 +64,6 @@ def patch_llama(fsdp_num,
     def wrap_for_flash_attention(func):
         def wrapper(*args, **kwargs):
             kwargs["attention_mask"] = None
-            # print("call wrapper")
             if os.getenv("ACC_FLASH_ATTN", "0") == "1" and not use_tp:
                 kwargs["fsdp_num"] = fsdp_num
                 kwargs["ulysses_sp_num"] = ulysses_sp_num
