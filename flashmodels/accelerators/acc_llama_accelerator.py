@@ -117,7 +117,6 @@ class ACCLLAMAAccelerator(Accelerator):
                         output['logits']) == '':
                 mark_sharding(output['logits'], mesh, ('fsdp', None, None))
 
-
         def get_split_points(llama, num_stages):
             split_points = []
             assert llama.config.num_hidden_layers >= num_stages

@@ -18,6 +18,7 @@ from transformers.models.llama.modeling_llama import (ACT2FN, LlamaRMSNorm,
 
 import flashmodels.tensor_parallel as tensor_parallel
 
+
 class Linear3d(nn.Module):
     """ Custom Linear layer"""
     def __init__(self, in_dim, out_dim, keep_dim):
@@ -78,12 +79,28 @@ class CoreAttention(nn.Module):
         self.config = config
         self.hidden_size = config.hidden_size
         self.num_heads = config.num_attention_heads
+        self.num_key_value_heads = config.num_key_value_heads
+        self.num_key_value_groups = self.num_heads // self.num_key_value_heads
         self.head_dim = self.hidden_size // self.num_heads
+
+    def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
+        batch, num_key_value_heads, slen, head_dim = hidden_states.shape
+        if n_rep == 1:
+            return hidden_states
+        hidden_states = hidden_states[:, :, None, :, :].expand(
+            batch, num_key_value_heads, n_rep, slen, head_dim)
+        return hidden_states.reshape(batch, num_key_value_heads * n_rep, slen,
+                                     head_dim)
 
     def forward(self, query_states, key_states, value_states, attention_mask):
         bsz = query_states.shape[0]
         q_len = query_states.shape[-2]
         kv_seq_len = key_states.shape[-2]
+
+        if version.parse(
+                transformers.__version__) >= version.parse('4.36'):  # llama3
+            key_states = repeat_kv(key_states, self.num_key_value_groups)
+            value_states = repeat_kv(value_states, self.num_key_value_groups)
 
         attn_weights = torch.einsum("abij,abjk->abik", query_states,
                                     key_states.transpose(2, 3)) / math.sqrt(
@@ -129,6 +146,7 @@ class LlamaAttention(nn.Module):
         self.hidden_size = config.hidden_size
         self.num_heads = config.num_attention_heads
         self.head_dim = self.hidden_size // self.num_heads
+        self.num_key_value_heads = config.num_key_value_heads
         self.max_position_embeddings = config.max_position_embeddings
 
         if (self.head_dim * self.num_heads) != self.hidden_size:
@@ -138,12 +156,21 @@ class LlamaAttention(nn.Module):
         self.q_proj = nn.Linear(self.hidden_size,
                                 self.num_heads * self.head_dim,
                                 bias=False)
-        self.k_proj = nn.Linear(self.hidden_size,
-                                self.num_heads * self.head_dim,
-                                bias=False)
-        self.v_proj = nn.Linear(self.hidden_size,
-                                self.num_heads * self.head_dim,
-                                bias=False)
+        if version.parse(
+                transformers.__version__) >= version.parse('4.36'):  # llama3
+            self.k_proj = nn.Linear(self.hidden_size,
+                                    self.num_key_value_heads * self.head_dim,
+                                    bias=False)
+            self.v_proj = nn.Linear(self.hidden_size,
+                                    self.num_key_value_heads * self.head_dim,
+                                    bias=False)
+        else:
+            self.k_proj = nn.Linear(self.hidden_size,
+                                    self.num_heads * self.head_dim,
+                                    bias=False)
+            self.v_proj = nn.Linear(self.hidden_size,
+                                    self.num_heads * self.head_dim,
+                                    bias=False)
         self.o_proj = nn.Linear(self.num_heads * self.head_dim,
                                 self.hidden_size,
                                 bias=False)
@@ -233,9 +260,17 @@ class LlamaAttention(nn.Module):
 
         query_states = query_states.view(bsz, q_len, self.num_heads,
                                          self.head_dim)
-        key_states = key_states.view(bsz, q_len, self.num_heads, self.head_dim)
-        value_states = value_states.view(bsz, q_len, self.num_heads,
+        if version.parse(transformers.__version__) >= version.parse('4.36'):
+            key_states = key_states.view(bsz, q_len, self.num_key_value_heads,
                                          self.head_dim)
+            value_states = value_states.view(bsz, q_len,
+                                             self.num_key_value_heads,
+                                             self.head_dim)
+        else:
+            key_states = key_states.view(bsz, q_len, self.num_heads,
+                                         self.head_dim)
+            value_states = value_states.view(bsz, q_len, self.num_heads,
+                                             self.head_dim)
 
         if self.tp_mesh is not None:
             mark_sharding(query_states, self.tp_mesh, (0, 1, 2, 3))
@@ -252,7 +287,6 @@ class LlamaAttention(nn.Module):
         query_states = query_states.transpose(1, 2)
         key_states = key_states.transpose(1, 2)
         value_states = value_states.transpose(1, 2)
-        print(f"{query_states.size()=} {key_states.size()=} {value_states.size()=}")
         if self.sp_mesh_4d is not None:
             # insert all-to-all
             mark_sharding(query_states, self.sp_mesh_4d, (0, 1, 2, 3))
@@ -294,7 +328,6 @@ class LlamaAttention(nn.Module):
             value_states = einops.rearrange(value_states,
                                             "b h s ... -> (b s) h ...")
             max_s = q_len
-            # print(f"{bsz=} {self.dp_num=}")
             cu_q_lens = torch.arange(0, (bsz / self.dp_num + 1) * q_len,
                                      step=q_len,
                                      dtype=torch.int32,

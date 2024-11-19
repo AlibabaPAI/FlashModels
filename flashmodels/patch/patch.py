@@ -35,7 +35,11 @@ def rewrite_load():
     exec(modified, transformers.modeling_utils.__dict__)
 
 
-def patch_llama(fsdp_num, ulysses_sp_num, tp_num, use_tp=False, spmd_fsdp=False):
+def patch_llama(fsdp_num,
+                ulysses_sp_num,
+                tp_num,
+                use_tp=False,
+                spmd_fsdp=False):
     transformers.models.llama.modeling_llama._make_causal_mask = make_causal_mask
 
     if ulysses_sp_num > 1 and not spmd_fsdp:
