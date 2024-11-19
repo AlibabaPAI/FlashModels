@@ -6,7 +6,7 @@ export PYTHONPATH=$PYTHONPATH:$SCRIPTPATH/../
 
 MBS=48              # micro batch size
 SEQLEN=2048         # max sequence length
-NUM_EPOCHS=10       # number epoches
+NUM_EPOCHS=1        # number epoches
 MAX_STEPS=-1        # max steps
 GA=1                # gradients accumulation number
 LOG_INTERVAL=1      # log interval
