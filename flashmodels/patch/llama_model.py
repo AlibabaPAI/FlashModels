@@ -516,8 +516,6 @@ def flash_attn_fwd(
             q,
             k,
             v,
-            # torch.tensor([q_len * ulysses_sp_num]),
-            # torch.tensor([q_len * ulysses_sp_num]),
             None,
             None,  # Use fixed len FA
             dropout_p=0.0,
