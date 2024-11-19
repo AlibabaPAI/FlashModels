@@ -268,6 +268,7 @@ def parse():
                     tp_num=args.tp_num,
                     use_tp=(args.tp_num > 1),
                     spmd_fsdp=args.spmd_fsdp)
+
     if args.model_type == "gemma" and args.accelerator == 'acc':
         patch_gemma()
 

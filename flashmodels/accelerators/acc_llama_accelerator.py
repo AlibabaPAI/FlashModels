@@ -83,8 +83,6 @@ class ACCLLAMAAccelerator(Accelerator):
         model.model.config.use_cache = False
 
         if self.args.sp_num > 1 and self.args.spmd_fsdp:
-            # device = lazy_device()
-            # model.to(device)
             model = self.ulysses(model)
             # return model, loader
 
@@ -118,6 +116,7 @@ class ACCLLAMAAccelerator(Accelerator):
                     'logits'] is not None and torch_xla._XLAC._get_xla_sharding_spec(
                         output['logits']) == '':
                 mark_sharding(output['logits'], mesh, ('fsdp', None, None))
+
 
         def get_split_points(llama, num_stages):
             split_points = []

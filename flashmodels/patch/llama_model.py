@@ -18,7 +18,6 @@ from transformers.models.llama.modeling_llama import (ACT2FN, LlamaRMSNorm,
 
 import flashmodels.tensor_parallel as tensor_parallel
 
-
 class Linear3d(nn.Module):
     """ Custom Linear layer"""
     def __init__(self, in_dim, out_dim, keep_dim):
@@ -253,7 +252,7 @@ class LlamaAttention(nn.Module):
         query_states = query_states.transpose(1, 2)
         key_states = key_states.transpose(1, 2)
         value_states = value_states.transpose(1, 2)
-
+        print(f"{query_states.size()=} {key_states.size()=} {value_states.size()=}")
         if self.sp_mesh_4d is not None:
             # insert all-to-all
             mark_sharding(query_states, self.sp_mesh_4d, (0, 1, 2, 3))
