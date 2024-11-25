@@ -181,13 +181,13 @@ fi
 export XLA_PERSISTENT_CACHE_PATH=./compiled_cache/
 
 MODEL_NAME=$(basename $MODEL_NAME_OR_PATH)
-JOB_NAME="${MODEL_NAME}_${ACCELERATOR}_bs${MBS}_seqlen${SEQLEN}_bf16-${BF16}_fp16-${FP16}_pp${PP_NUM}_tp${TP_NUM}_fsdp${FSDP_NUM}_spmd-${XLA_USE_SPMD}_gc-${GC}_fa-${FLASH_ATTN}"
+JOB_NAME="${MODEL_NAME}_${ACCELERATOR}_bs${MBS}_seqlen${SEQLEN}_bf16-${BF16}_fp16-${FP16}_pp${PP_NUM}_tp${TP_NUM}_fsdp${FSDP_NUM}"
 
 
 [ -z "$RANK" ] && RANK=0
 [ -z "$WORLD_SIZE" ] && WORLD_SIZE=1
 [ -z "$MASTER_ADDR" ] && MASTER_ADDR=127.0.0.1
-[ -z "$MASTER_PORT" ] && MASTER_PORT=9011
+[ -z "$MASTER_PORT" ] && MASTER_PORT=9010
 
 if [ "$WORLD_SIZE" -eq 1 ]; then
     NPROC_PER_NODE=$((FSDP_NUM * TP_NUM * PP_NUM * DP_NUM ))
