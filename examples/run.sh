@@ -190,7 +190,7 @@ JOB_NAME="${MODEL_NAME}_${ACCELERATOR}_bs${MBS}_seqlen${SEQLEN}_bf16-${BF16}_fp1
 [ -z "$MASTER_PORT" ] && MASTER_PORT=9010
 
 if [ "$WORLD_SIZE" -eq 1 ]; then
-    NPROC_PER_NODE=$((FSDP_NUM * TP_NUM * PP_NUM * DP_NUM ))
+    NPROC_PER_NODE=$((FSDP_NUM * TP_NUM * PP_NUM * DP_NUM))
     [ "$NPROC_PER_NODE" -eq 0 ] && echo "Error: NPROC_PER_NODE is zero." && exit 1
 else
     NPROC_PER_NODE=$(nvidia-smi -L | wc -l)

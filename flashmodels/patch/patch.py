@@ -42,7 +42,7 @@ def patch_llama(fsdp_num,
                 spmd_fsdp=False):
     transformers.models.llama.modeling_llama._make_causal_mask = make_causal_mask
 
-    if ulysses_sp_num > 1 and not spmd_fsdp:
+    if ulysses_sp_num > 1 and not spmd_fsdp and os.environ.get("XLA_USE_SPMD") == "0":
         transformers.models.llama.LlamaModel.forward = LlamaModel.forward
         os.environ["CP_SIZE"] = str(ulysses_sp_num)
 
