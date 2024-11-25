@@ -107,11 +107,9 @@ class LlamaModel(LlamaPreTrainedModel):
             position_ids = cache_position.unsqueeze(0)
 
         if os.getenv('CP_SIZE', None):
-            position_ids = context_parallel.split_forward_gather_backward(
-                position_ids, 1, context_parallel.get_intra_cp_process_group())
             inputs_embeds = context_parallel.split_forward_gather_backward(
                 inputs_embeds, 1,
-                context_parallel.get_intra_cp_process_group())
+                context_parallel.get_intra_cp_process_group(), "down")
 
         causal_mask = self._update_causal_mask(attention_mask, inputs_embeds,
                                                cache_position, past_key_values,
@@ -162,7 +160,7 @@ class LlamaModel(LlamaPreTrainedModel):
         if os.getenv('CP_SIZE', None):
             hidden_states = context_parallel.gather_forward_split_backward(
                 hidden_states, 1,
-                context_parallel.get_intra_cp_process_group())
+                context_parallel.get_intra_cp_process_group(), "up")
 
         hidden_states = self.norm(hidden_states)
 
@@ -750,26 +748,54 @@ def flash_attn_fwd(
 
     if ulysses_sp_num > 1 and not use_spmd:
         bsz, q_len, _ = hidden_states.size()
-        q = self.q_proj(hidden_states).view(bsz, q_len, self.num_heads,
-                                            self.head_dim)
-        k = self.k_proj(hidden_states).view(bsz, q_len,
-                                            self.num_key_value_heads,
-                                            self.head_dim)
-        v = self.v_proj(hidden_states).view(bsz, q_len,
-                                            self.num_key_value_heads,
-                                            self.head_dim)
+        query_states = self.q_proj(hidden_states).view(bsz, q_len,
+                                                       self.num_heads,
+                                                       self.head_dim)
+        key_states = self.k_proj(hidden_states).view(bsz, q_len,
+                                                     self.num_key_value_heads,
+                                                     self.head_dim)
+        value_states = self.v_proj(hidden_states).view(
+            bsz, q_len, self.num_key_value_heads, self.head_dim)
         cp_func = context_parallel.ulysses
         cp_group = context_parallel.get_context_parallel_group()
+
+        def rope_func(q, k, v):
+            query_states = q.transpose(1,
+                                       2)  # bsz, nheads / N, seqlen, headdim
+            key_states = k.transpose(1, 2)
+            value_states = v.transpose(1, 2)
+
+            if version.parse(
+                    transformers.__version__) >= version.parse('4.36'):
+                cos, sin = self.rotary_emb(value_states, position_ids)
+                query_states, key_states = apply_rotary_pos_emb(
+                    query_states, key_states, cos, sin)
+            else:
+                cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
+                query_states, key_states = apply_rotary_pos_emb(
+                    query_states, key_states, cos, sin, position_ids)
+            query_states, key_states = apply_rotary_pos_emb(
+                query_states, key_states, cos, sin, position_ids)
+
+            query_states = einops.rearrange(query_states, "b h s d -> b s h d")
+            key_states = einops.rearrange(key_states, "b h s d -> b s h d")
+            value_states = einops.rearrange(value_states, "b h s d -> b s h d")
+
+            return query_states, key_states, value_states
+
         output = cp_func(
-            q,
-            k,
-            v,
+            query_states,
+            key_states,
+            value_states,
             None,
             None,  # Use fixed len FA
             dropout_p=0.0,
             softmax_scale=None,
             causal=True,
-            process_group=cp_group)
+            process_group=cp_group,
+            position_ids=position_ids,
+            rope_func=rope_func)
+
         return self.o_proj(einops.rearrange(
             output, "b s h d -> b s (h d)")), None, past_key_value
 
@@ -835,7 +861,6 @@ def flash_attn_fwd(
                                             mesh=mesh,
                                             partition_spec=partition_spec)
     else:
-
         output = flash_attn_xla(query_states,
                                 key_states,
                                 value_states,
