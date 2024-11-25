@@ -66,7 +66,8 @@ def get_hf_dataset_loader(tokenizer, args):
         train_sampler = torch.utils.data.distributed.DistributedSampler(
             train_dataset,
             num_replicas=(1 if args.tp_num > 1 else data_num_replicas),
-            rank=(0 if args.tp_num > 1 else args.global_rank),
+            rank=(0 if args.tp_num > 1 else args.global_rank %
+                  data_num_replicas),
             shuffle=True)
 
     bs = args.micro_batch_size

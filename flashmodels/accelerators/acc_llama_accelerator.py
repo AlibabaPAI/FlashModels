@@ -143,6 +143,7 @@ class ACCLLAMAAccelerator(Accelerator):
 
         config.dist.dp.size = self.args.dp_num
         config.dist.tp.size = self.args.tp_num
+        config.dist.sp.size = self.args.sp_num
 
         config.dist.pp.size = self.args.pp_num
         config.dist.pp.num_micro_batches = self.args.gradient_accumulation_steps
