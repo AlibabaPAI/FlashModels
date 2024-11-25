@@ -75,9 +75,10 @@ def get_hf_dataset_loader(tokenizer, args):
     if args.pp_num > 1:
         bs *= args.gradient_accumulation_steps
     if args.spmd_fsdp:
-        bs *= args.fsdp_num // args.sp_num
-        # bs *= args.fsdp_num
-    print(f"{bs=}")
+        dp_num = args.fsdp_num // args.sp_num
+        if dp_num != 0:
+            bs *= args.fsdp_num // args.sp_num
+
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=bs,

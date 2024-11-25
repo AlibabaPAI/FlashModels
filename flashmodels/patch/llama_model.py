@@ -73,6 +73,18 @@ class LlamaMLP(nn.Module):
         return out
 
 
+def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
+    batch, num_key_value_heads, slen, head_dim = hidden_states.shape
+    if n_rep == 1:
+        return hidden_states
+    hidden_states = hidden_states[:, :,
+                                  None, :, :].expand(batch,
+                                                     num_key_value_heads,
+                                                     n_rep, slen, head_dim)
+    return hidden_states.reshape(batch, num_key_value_heads * n_rep, slen,
+                                 head_dim)
+
+
 class CoreAttention(nn.Module):
     def __init__(self, config: LlamaConfig):
         super().__init__()
@@ -82,15 +94,6 @@ class CoreAttention(nn.Module):
         self.num_key_value_heads = config.num_key_value_heads
         self.num_key_value_groups = self.num_heads // self.num_key_value_heads
         self.head_dim = self.hidden_size // self.num_heads
-
-    def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
-        batch, num_key_value_heads, slen, head_dim = hidden_states.shape
-        if n_rep == 1:
-            return hidden_states
-        hidden_states = hidden_states[:, :, None, :, :].expand(
-            batch, num_key_value_heads, n_rep, slen, head_dim)
-        return hidden_states.reshape(batch, num_key_value_heads * n_rep, slen,
-                                     head_dim)
 
     def forward(self, query_states, key_states, value_states, attention_mask):
         bsz = query_states.shape[0]
@@ -321,38 +324,26 @@ class LlamaAttention(nn.Module):
         attn_output = None
         attn_weights = None
         if os.getenv("ACC_FLASH_ATTN", "0") == "1":
-            query_states = einops.rearrange(query_states,
-                                            "b h s ... -> (b s) h ...")
-            key_states = einops.rearrange(key_states,
-                                          "b h s ... -> (b s) h ...")
-            value_states = einops.rearrange(value_states,
-                                            "b h s ... -> (b s) h ...")
-            max_s = q_len
-            cu_q_lens = torch.arange(0, (bsz / self.dp_num + 1) * q_len,
-                                     step=q_len,
-                                     dtype=torch.int32,
-                                     device=query_states.device)
+            query_states = einops.rearrange(query_states, "b h s d -> b s h d")
+            key_states = einops.rearrange(key_states, "b h s d -> b s h d")
+            value_states = einops.rearrange(value_states, "b h s d -> b s h d")
+
             device_ids = np.array(range(self.dp_num * self.tp_num))
             mesh = xs.Mesh(device_ids, (self.dp_num, self.tp_num),
                            ('fsdp', 'tensor'))
-            partition_spec = ('fsdp', 'tensor', None
+            partition_spec = ('fsdp', None, 'tensor', None
                               )  # q  ((bs * seq_len), num_head, hidden_dim)
             attn_output = spmd_flash_attn_varlen_xla(
                 query_states,
                 key_states,
                 value_states,
-                cu_q_lens,
-                cu_q_lens,
-                max_s,
-                max_s,
+                attention_mask,
                 dropout_p=0.0,
                 softmax_scale=None,
                 causal=True,
                 mesh=mesh,
                 partition_spec=partition_spec)
-            attn_output = einops.rearrange(attn_output,
-                                           "(b s) ... -> b s ...",
-                                           b=bsz)
+            attn_output = einops.rearrange(attn_output, "b s h d -> b h s d")
         else:
             attn_output, attn_weights = self.core_attn(query_states,
                                                        key_states,
@@ -496,10 +487,6 @@ def flash_attn_fwd(
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor],
            Optional[Tuple[torch.Tensor]]]:
 
-    if tp_num > 1:
-        # dp + tp + sp + zero3
-        pass
-
     if ulysses_sp_num > 1 and not use_spmd:
         bsz, q_len, _ = hidden_states.size()
         q = self.q_proj(hidden_states).view(bsz, q_len, self.num_heads,
@@ -559,59 +546,45 @@ def flash_attn_fwd(
     # See https://github.com/HazyResearch/flash-attention/blob/main/flash_attn/flash_attention.py
     # if attention_mask is not None:
     #     value_states = value_states * attention_mask.unsqueeze(1).unsqueeze(-1)
-    q = einops.rearrange(query_states, "b h s ... -> (b s) h ...")
-    k = einops.rearrange(key_states, "b h s ... -> (b s) h ...")
-    v = einops.rearrange(value_states, "b h s ... -> (b s) h ...")
-    max_s = q_len
+    query_states = einops.rearrange(query_states, "b h s d -> b s h d")
+    key_states = einops.rearrange(key_states, "b h s d -> b s h d")
+    value_states = einops.rearrange(value_states, "b h s d -> b s h d")
+
+    # b seq head_num hidden_size
 
     output = None
     if use_spmd:
-        cu_q_lens = torch.arange(0, (bsz / (fsdp_num // ulysses_sp_num) + 1) *
-                                 q_len,
-                                 step=q_len,
-                                 dtype=torch.int32,
-                                 device=q.device)
         device_ids = np.array(range(fsdp_num))
         mesh = xs.Mesh(device_ids, (fsdp_num, 1), ('fsdp', 'tensor'))
-        partition_spec = ('fsdp', None, None)
+        partition_spec = ('fsdp', None, None, None)
         if ulysses_sp_num > 1:
             mesh = xs.Mesh(device_ids,
                            (fsdp_num // ulysses_sp_num, ulysses_sp_num),
                            ('dp', 'sp'))
-            partition_spec = ('dp', 'sp', None)
+            partition_spec = ('dp', None, 'sp', None)
 
-        output = spmd_flash_attn_varlen_xla(q,
-                                            k,
-                                            v,
-                                            cu_q_lens,
-                                            cu_q_lens,
-                                            max_s,
-                                            max_s,
+        output = spmd_flash_attn_varlen_xla(query_states,
+                                            key_states,
+                                            value_states,
+                                            attention_mask,
                                             dropout_p=0.0,
                                             softmax_scale=None,
                                             causal=True,
                                             mesh=mesh,
                                             partition_spec=partition_spec)
     else:
-        cu_q_lens = torch.arange(0, (bsz + 1) * q_len,
-                                 step=q_len,
-                                 dtype=torch.int32,
-                                 device=q.device)
+
         output = flash_attn_varlen_xla(q,
                                        k,
                                        v,
-                                       cu_q_lens,
-                                       cu_q_lens,
-                                       max_s,
-                                       max_s,
+                                       attention_mask,
                                        dropout_p=0.0,
                                        softmax_scale=None,
                                        causal=True)
 
-    output = einops.rearrange(output, "(b s) ... -> b s ...", b=bsz)
+    output = einops.rearrange(output, "b s h d -> b s (h d)")
 
-    return self.o_proj(einops.rearrange(
-        output, "b s h d -> b s (h d)")), None, past_key_value
+    return self.o_proj(output), None, past_key_value
 
 
 def flash_attn_prep_mask(self, attention_mask, input_shape, inputs_embeds,

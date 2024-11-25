@@ -29,7 +29,7 @@ except ImportError:
 class ACCLLAMAAccelerator(Accelerator):
     def __init__(self, args):
         super().__init__(args)
-        devices_ids = np.arange(self.args.world_size)  # 4 (0,1) (2,3)
+        devices_ids = np.arange(self.args.world_size)
         # init mesh for SPMD
         # TP
         self.tp_row_mesh = None
@@ -47,12 +47,9 @@ class ACCLLAMAAccelerator(Accelerator):
             self.tp_mesh = Mesh(devices_ids, (dp_num, self.args.tp_num, 1))
         # Ulysses SP
         self.sp_mesh_3d = None
-        if self.args.sp_num > 1 and self.args.spmd_fsdp:  # 2
-            self.sp_mesh_3d = Mesh(
-                devices_ids, ((int)(self.args.world_size / self.args.sp_num),
-                              self.args.sp_num, 1))  # [2,2]
-            # self.sp_mesh_3d = Mesh(devices_ids, (1, self.args.sp_num, 1))
-            # [4,1] ->
+        if self.args.sp_num > 1 and self.args.spmd_fsdp:
+            self.sp_mesh_3d = Mesh(devices_ids, ((int)(
+                self.args.world_size / self.args.sp_num), self.args.sp_num, 1))
 
     def accelerate(self, model, loader):
         if self.args.lora:
@@ -82,13 +79,18 @@ class ACCLLAMAAccelerator(Accelerator):
     def accelerate_internal(self, model, loader):
         model.model.config.use_cache = False
 
-        if self.args.sp_num > 1 and self.args.spmd_fsdp:
-            model = self.ulysses(model)
-            # return model, loader
+        if self.args.sp_num > 1:
+            if self.args.spmd_fsdp:
+                # spmd ulysses
+                model = self.ulysses(model)
+
+            if not self.args.fsdp_num > 1:
+                device = ta.lazy_device()
+                model = model.to(device)
+                return model, loader
 
         if self.args.tp_num > 1 and self.args.pp_num == 1:
             model = self.tensor_parallel(model)
-            # return model, loader
 
         # TODO: support this in torchacc
         if self.args.resume_from_checkpoint:
@@ -236,10 +238,10 @@ class ACCLLAMAAccelerator(Accelerator):
             decoder_layer.mlp.down_proj.forward = \
                 MethodType(_forward_linear, decoder_layer.mlp.down_proj)
 
-            # if self.args.gc:
-            #     if gc_cnt > 0:
-            #         decoder_layer = checkpoint_module(decoder_layer)
-            #         gc_cnt -= 1
+            if self.args.gc:
+                decoder_layer.self_attn.core_attn = checkpoint_module(
+                    decoder_layer.self_attn.core_attn)
+
         return model
 
     def parallel_3d(self, model):
@@ -383,7 +385,7 @@ class ACCLLAMAAccelerator(Accelerator):
         row_dim = 0 if (self.args.use_zero3
                         or self.args.fsdp_num > 1) else None
         col_dim = 1 if self.args.use_zero3 or self.args.fsdp_num > 1 else None
-        # TODO: 切分Embedding，判断显存是否大
+
         device = lazy_device()
         gc_cnt = self.args.gc_cnt
         for decoder_layer in model.model.layers:
@@ -463,9 +465,8 @@ class ACCLLAMAAccelerator(Accelerator):
                 decoder_layer.mlp.forward = \
                     MethodType(_forward_ag_sp, decoder_layer.mlp)
             if self.args.gc:
-                if gc_cnt > 0:
-                    decoder_layer = checkpoint_module(decoder_layer)
-                    gc_cnt -= 1
+                decoder_layer.self_attn.core_attn = checkpoint_module(
+                    decoder_layer.self_attn.core_attn)
 
         is_torchdistX_deferred_init = (LOW_CPU_MEM_USAGE and any(
             fake.is_fake(param) for param in model.parameters()))
