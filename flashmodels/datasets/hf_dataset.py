@@ -77,7 +77,7 @@ def get_hf_dataset_loader(tokenizer, args):
     if args.spmd_fsdp:
         dp_num = args.fsdp_num // args.sp_num
         if dp_num != 0:
-            bs *= args.fsdp_num // args.sp_num
+            bs *= dp_num
 
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,

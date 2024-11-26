@@ -388,7 +388,6 @@ class ACCLLAMAAccelerator(Accelerator):
         col_dim = 1 if self.args.use_zero3 or self.args.fsdp_num > 1 else None
 
         device = lazy_device()
-        gc_cnt = self.args.gc_cnt
         for decoder_layer in model.model.layers:
             is_torchdistX_deferred_init = (LOW_CPU_MEM_USAGE and any(
                 fake.is_fake(param) for param in decoder_layer.parameters()))
