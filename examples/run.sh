@@ -11,12 +11,14 @@ MAX_STEPS=-1        # max steps
 GA=1                # gradients accumulation number
 LOG_INTERVAL=1      # log interval
 GC=0                # gradients checkpoint
+GC_CNT=0
 FP16=0              # float16
 BF16=1              # bfloat16
 ACCELERATOR="acc"   # accelerator type
 DP_NUM=1            # data parallelism number
 PP_NUM=1            # pipeline parallelism number
 TP_NUM=1            # tensor parallelism number
+SP_NUM=1            # ulysses sequence parallelism number
 FSDP_NUM=1          # fsdp number
 FLASH_ATTN=1        # enable flash-attn-2
 DATA=./data/wikitext-2-raw-v1.json               # data name or path
@@ -110,6 +112,16 @@ while [[ $# -gt 0 ]]; do
         GC=1
         shift
         ;;
+        --gc_cnt)
+        GC_CNT="$2"
+        shift
+        shift
+        ;;
+        --sp_num)
+        SP_NUM="$2"
+        shift
+        shift
+        ;;
         --bf16)
         BF16=1
         FP16=0
@@ -147,6 +159,7 @@ done
 
 OPTION_ARGS=""
 [[ "$GC" -eq 1 ]] && OPTION_ARGS+="--gc "
+[[ "$GC_CNT" -gt 0 ]] && OPTION_ARGS+="--gc_cnt $GC_CNT "
 [[ "$BF16" -eq 1 ]] && OPTION_ARGS+="--bf16 "
 [[ "$FP16" -eq 1 ]] && OPTION_ARGS+="--fp16 "
 
@@ -183,7 +196,9 @@ else
     NPROC_PER_NODE=$(nvidia-smi -L | wc -l)
 fi
 
-mkdir -p log
+LOG_DIR="log"
+
+mkdir -p $LOG_DIR
 
 torchrun --nproc_per_node $NPROC_PER_NODE \
         --nnodes $WORLD_SIZE \
@@ -200,8 +215,9 @@ torchrun --nproc_per_node $NPROC_PER_NODE \
         --max_train_steps $MAX_STEPS \
         --pp_num $PP_NUM \
         --tp_num $TP_NUM \
+        --sp_num $SP_NUM \
         --fsdp_num $FSDP_NUM \
         --gradient_accumulation_steps $GA \
         $OPTION_ARGS \
         $OTHER_ARGS \
-        --log_interval $LOG_INTERVAL 2>&1 | tee ./log/${JOB_NAME}.log ; exit ${PIPESTATUS[0]}
+        --log_interval $LOG_INTERVAL 2>&1 | tee ./${LOG_DIR}/${JOB_NAME}.log ; exit ${PIPESTATUS[0]}

@@ -5,12 +5,13 @@ from types import MethodType
 
 import numpy as np
 import torch
+import torch_xla
 import torch_xla.core.xla_model as xm
 import torchacc as ta
 from torch_xla.distributed.fsdp import consolidate_sharded_model_checkpoints
 from torchacc import lazy_device
 from torchacc.dist.tp import Mesh, mark_sharding
-from torchacc.utils.checkpoint import checkpoint_module
+from torchacc.utils.checkpoint import checkpoint_module, gradient_checkpoint
 
 import flashmodels.tensor_parallel as tensor_parallel
 from flashmodels.accelerators.accelerator import (Accelerator,
@@ -35,18 +36,20 @@ class ACCLLAMAAccelerator(Accelerator):
         self.tp_col_mesh = None
         self.tp_mesh = None
         if self.args.tp_num > 1 and not self.args.pp_num > 1:
+            dp_num = self.args.dp_num
+            if self.args.fsdp_num > 1:
+                dp_num = self.args.fsdp_num
+
             new_dids = devices_ids.reshape(
-                self.args.dp_num, self.args.tp_num).transpose().flatten()
-            self.tp_row_mesh = Mesh(new_dids,
-                                    (self.args.tp_num, self.args.dp_num))
-            self.tp_col_mesh = Mesh(devices_ids,
-                                    (self.args.dp_num, self.args.tp_num))
-            self.tp_mesh = Mesh(devices_ids,
-                                (self.args.dp_num, self.args.tp_num, 1))
+                dp_num, self.args.tp_num).transpose().flatten()
+            self.tp_row_mesh = Mesh(new_dids, (self.args.tp_num, dp_num))
+            self.tp_col_mesh = Mesh(devices_ids, (dp_num, self.args.tp_num))
+            self.tp_mesh = Mesh(devices_ids, (dp_num, self.args.tp_num, 1))
         # Ulysses SP
         self.sp_mesh_3d = None
-        if self.args.sp_num > 1:
-            self.sp_mesh_3d = Mesh(devices_ids, (1, self.args.sp_num, 1))
+        if self.args.sp_num > 1 and self.args.spmd_fsdp:
+            self.sp_mesh_3d = Mesh(devices_ids, ((int)(
+                self.args.world_size / self.args.sp_num), self.args.sp_num, 1))
 
     def accelerate(self, model, loader):
         if self.args.lora:
@@ -77,14 +80,17 @@ class ACCLLAMAAccelerator(Accelerator):
         model.model.config.use_cache = False
 
         if self.args.sp_num > 1:
-            device = lazy_device()
-            model.to(device)
-            model = self.ulysses(model)
-            return model, loader
+            if self.args.spmd_fsdp:
+                # spmd ulysses
+                model = self.ulysses(model)
+
+            if not self.args.fsdp_num > 1:
+                device = ta.lazy_device()
+                model = model.to(device)
+                return model, loader
 
         if self.args.tp_num > 1 and self.args.pp_num == 1:
             model = self.tensor_parallel(model)
-            return model, loader
 
         # TODO: support this in torchacc
         if self.args.resume_from_checkpoint:
@@ -108,7 +114,9 @@ class ACCLLAMAAccelerator(Accelerator):
 
     def get_config(self, model):
         def _shard_output_callable(output, mesh):
-            if not isinstance(output, tuple) and output['logits'] is not None:
+            if not isinstance(output, tuple) and output[
+                    'logits'] is not None and torch_xla._XLAC._get_xla_sharding_spec(
+                        output['logits']) == '':
                 mark_sharding(output['logits'], mesh, ('fsdp', None, None))
 
         def get_split_points(llama, num_stages):
@@ -135,6 +143,7 @@ class ACCLLAMAAccelerator(Accelerator):
 
         config.dist.dp.size = self.args.dp_num
         config.dist.tp.size = self.args.tp_num
+        config.dist.sp.size = self.args.sp_num
 
         config.dist.pp.size = self.args.pp_num
         config.dist.pp.num_micro_batches = self.args.gradient_accumulation_steps
@@ -177,20 +186,22 @@ class ACCLLAMAAccelerator(Accelerator):
         https://github.com/microsoft/DeepSpeed/tree/master/blogs/deepspeed-ulysses
         """
         def _grad_shard_sp(grad):
-            mark_sharding(grad, self.sp_mesh_3d, (0, 1, 2))
+            mark_sharding(grad, self.sp_mesh_3d, (0, 1, None))
             return grad
 
         def _forward_linear(m, *args):
             h = args[0]
             out = torch.einsum("bij,jk->bik", h, m.weight.T)
-            mark_sharding(out, self.sp_mesh_3d, (0, 1, 2))
-            out.register_hook(lambda grad: _grad_shard_sp(grad))
+            mark_sharding(out, self.sp_mesh_3d, (0, 1, None))
+            if out.requires_grad:
+                out.register_hook(lambda grad: _grad_shard_sp(grad))
             return out
 
         def _forward_sp(m, *args, **kwargs):
             h = args[0] if len(args) > 0 else kwargs.get("hidden_states")
-            mark_sharding(h, self.sp_mesh_3d, (0, 1, 2))
-            h.register_hook(lambda grad: _grad_shard_sp(grad))
+            mark_sharding(h, self.sp_mesh_3d, (0, 1, None))
+            if h.requires_grad:
+                h.register_hook(lambda grad: _grad_shard_sp(grad))
             if len(args) > 0:
                 as_list = list(args)
                 as_list[0] = h
@@ -200,8 +211,10 @@ class ACCLLAMAAccelerator(Accelerator):
             output = m._original_forward(*args, **kwargs)
             return output
 
+        device = lazy_device()
         model.lm_head.forward = MethodType(_forward_linear, model.lm_head)
         for decoder_layer in model.model.layers:
+
             if hasattr(decoder_layer.self_attn, "_create_sp_mesh"):
                 decoder_layer.self_attn._create_sp_mesh(self.args.sp_num)
 
@@ -225,6 +238,7 @@ class ACCLLAMAAccelerator(Accelerator):
                 MethodType(_forward_linear, decoder_layer.mlp.up_proj)
             decoder_layer.mlp.down_proj.forward = \
                 MethodType(_forward_linear, decoder_layer.mlp.down_proj)
+
             if self.args.gc:
                 decoder_layer.self_attn.core_attn = checkpoint_module(
                     decoder_layer.self_attn.core_attn)
@@ -272,7 +286,8 @@ class ACCLLAMAAccelerator(Accelerator):
             return out
 
         assert os.environ.get("ACC_LLAMA_MLP") != "1"
-        dp_dim = "dp" if self.args.use_zero3 else None
+        dp_dim = "dp" if (self.args.use_zero3
+                          or self.args.fsdp_num > 1) else None
         for name, m in model.named_modules():
             # attn
             if "q_proj" in name:
@@ -292,7 +307,7 @@ class ACCLLAMAAccelerator(Accelerator):
                 context.tp_mark_sharding(m.weight, (dp_dim, "tp"))
 
             # attn linear
-            if self.args.use_zero2 or self.args.use_zero3:
+            if self.args.use_zero2 or self.args.use_zero3 or self.args.fsdp_num > 1:
                 tp_dp_linear = functools.partial(_forward_linear,
                                                  old_specs=("tp", None),
                                                  new_specs=("tp", "dp"))
@@ -364,11 +379,14 @@ class ACCLLAMAAccelerator(Accelerator):
             out_h = output[0] if isinstance(output, tuple) else output
             # shard on sequence dim.
             mark_sharding(out_h, self.tp_mesh, (0, 1, 2))
-            out_h.register_hook(lambda grad: _grad_ag(grad))
+            if out_h.requires_grad:
+                out_h.register_hook(lambda grad: _grad_ag(grad))
             return output
 
-        row_dim = 0 if self.args.use_zero3 else None
-        col_dim = 1 if self.args.use_zero3 else None
+        row_dim = 0 if (self.args.use_zero3
+                        or self.args.fsdp_num > 1) else None
+        col_dim = 1 if self.args.use_zero3 or self.args.fsdp_num > 1 else None
+
         device = lazy_device()
         for decoder_layer in model.model.layers:
             is_torchdistX_deferred_init = (LOW_CPU_MEM_USAGE and any(
@@ -378,8 +396,11 @@ class ACCLLAMAAccelerator(Accelerator):
             decoder_layer.to(device)
             # attn
             if hasattr(decoder_layer.self_attn, "_create_tp_mesh"):
+                dp_num = self.args.dp_num
+                if self.args.fsdp_num > 1:
+                    dp_num = self.args.fsdp_num
                 decoder_layer.self_attn._create_tp_mesh(
-                    self.args.tp_num, self.args.dp_num)
+                    self.args.tp_num, dp_num)
             mark_sharding(decoder_layer.self_attn.q_proj.weight,
                           self.tp_row_mesh, (0, col_dim))
             mark_sharding(decoder_layer.self_attn.k_proj.weight,

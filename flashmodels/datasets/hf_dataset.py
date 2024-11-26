@@ -53,7 +53,8 @@ def get_hf_dataset_loader(tokenizer, args):
     train_dataset = lm_datasets["train"]
     # DataLoader creation
     train_sampler = None
-    data_num_replicas = args.fsdp_num * args.dp_num
+    data_num_replicas = args.fsdp_num * args.dp_num // args.sp_num
+    # data_num_replicas = args.fsdp_num * args.dp_num
     if args.pp_num > 1:
         # disable sampler for now
         # the rank below should be:
@@ -65,8 +66,8 @@ def get_hf_dataset_loader(tokenizer, args):
         train_sampler = torch.utils.data.distributed.DistributedSampler(
             train_dataset,
             num_replicas=(1 if args.tp_num > 1 else data_num_replicas),
-            rank=(0 if args.tp_num > 1 else args.global_rank),
-            shuffle=True)
+            rank=(0 if args.tp_num > 1 else args.global_rank // args.sp_num),
+            shuffle=False)
 
     bs = args.micro_batch_size
     if args.tp_num > 1:
@@ -74,7 +75,10 @@ def get_hf_dataset_loader(tokenizer, args):
     if args.pp_num > 1:
         bs *= args.gradient_accumulation_steps
     if args.spmd_fsdp:
-        bs *= args.fsdp_num
+        dp_num = args.fsdp_num // args.sp_num
+        if dp_num != 0:
+            bs *= dp_num
+
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=bs,

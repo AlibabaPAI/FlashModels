@@ -1,22 +1,204 @@
 import math
 import os
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple, Union
 
 import einops
 import numpy as np
 import torch
 import torch_xla.core.xla_model as xm
 import torch_xla.distributed.spmd as xs
+import torchacc.ops.context_parallel as context_parallel
 import transformers
 from packaging import version
 from torch import nn
 from torchacc.dist.tp import Mesh, mark_sharding
+from transformers.cache_utils import Cache, DynamicCache, StaticCache
+from transformers.modeling_outputs import BaseModelOutputWithPast
 from transformers.models.llama.configuration_llama import LlamaConfig
-from transformers.models.llama.modeling_llama import (ACT2FN, LlamaRMSNorm,
+from transformers.models.llama.modeling_llama import (ACT2FN,
+                                                      LlamaPreTrainedModel,
+                                                      LlamaRMSNorm,
                                                       LlamaRotaryEmbedding,
                                                       apply_rotary_pos_emb)
 
 import flashmodels.tensor_parallel as tensor_parallel
+
+
+class LlamaModel(LlamaPreTrainedModel):
+    """
+    Transformer decoder consisting of *config.num_hidden_layers* layers. Each layer is a [`LlamaDecoderLayer`]
+
+    Args:
+        config: LlamaConfig
+    """
+    def __init__(self, config: LlamaConfig):
+        super().__init__(config)
+        self.padding_idx = config.pad_token_id
+        self.vocab_size = config.vocab_size
+
+        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size,
+                                         self.padding_idx)
+        self.layers = nn.ModuleList([
+            LlamaDecoderLayer(config, layer_idx)
+            for layer_idx in range(config.num_hidden_layers)
+        ])
+        self.norm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.gradient_checkpointing = False
+
+        # Initialize weights and apply final processing
+        self.post_init()
+
+    def get_input_embeddings(self):
+        return self.embed_tokens
+
+    def set_input_embeddings(self, value):
+        self.embed_tokens = value
+
+    def forward(
+        self,
+        input_ids: torch.LongTensor = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_values: Optional[Union[Cache,
+                                        List[torch.FloatTensor]]] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        use_cache: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+        cache_position: Optional[torch.LongTensor] = None,
+    ) -> Union[Tuple, BaseModelOutputWithPast]:
+        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
+        output_hidden_states = (output_hidden_states
+                                if output_hidden_states is not None else
+                                self.config.output_hidden_states)
+        use_cache = use_cache if use_cache is not None else self.config.use_cache
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+
+        if (input_ids is None) ^ (inputs_embeds is not None):
+            raise ValueError(
+                "You cannot specify both input_ids and inputs_embeds at the same time, and must specify either one"
+            )
+
+        if self.gradient_checkpointing and self.training and use_cache:
+            logger.warning_once(
+                "`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`."
+            )
+            use_cache = False
+
+        if inputs_embeds is None:
+            inputs_embeds = self.embed_tokens(input_ids)
+
+        return_legacy_cache = False
+        if use_cache and not isinstance(
+                past_key_values,
+                Cache):  # kept for BC (non `Cache` `past_key_values` inputs)
+            return_legacy_cache = True
+            past_key_values = DynamicCache.from_legacy_cache(past_key_values)
+
+        if cache_position is None:
+            past_seen_tokens = past_key_values.get_seq_length(
+            ) if past_key_values is not None else 0
+            cache_position = torch.arange(past_seen_tokens,
+                                          past_seen_tokens +
+                                          inputs_embeds.shape[1],
+                                          device=inputs_embeds.device)
+        if position_ids is None:
+            position_ids = cache_position.unsqueeze(0)
+
+        if os.getenv('CP_SIZE', None):
+            inputs_embeds = context_parallel.split_forward_gather_backward(
+                inputs_embeds, 1,
+                context_parallel.get_intra_cp_process_group(), "down")
+
+        causal_mask = self._update_causal_mask(attention_mask, inputs_embeds,
+                                               cache_position, past_key_values,
+                                               output_attentions)
+
+        # embed positions
+        hidden_states = inputs_embeds
+        # decoder layers
+        all_hidden_states = () if output_hidden_states else None
+        all_self_attns = () if output_attentions else None
+        next_decoder_cache = None
+
+        for decoder_layer in self.layers:
+            if output_hidden_states:
+                all_hidden_states += (hidden_states, )
+
+            if self.gradient_checkpointing and self.training:
+                layer_outputs = self._gradient_checkpointing_func(
+                    decoder_layer.__call__,
+                    hidden_states,
+                    causal_mask,
+                    position_ids,
+                    past_key_values,
+                    output_attentions,
+                    use_cache,
+                    cache_position,
+                )
+            else:
+                layer_outputs = decoder_layer(
+                    hidden_states,
+                    attention_mask=causal_mask,
+                    position_ids=position_ids,
+                    past_key_value=past_key_values,
+                    output_attentions=output_attentions,
+                    use_cache=use_cache,
+                    cache_position=cache_position,
+                )
+
+            hidden_states = layer_outputs[0]
+
+            if use_cache:
+                next_decoder_cache = layer_outputs[
+                    2 if output_attentions else 1]
+
+            if output_attentions:
+                all_self_attns += (layer_outputs[1], )
+
+        if os.getenv('CP_SIZE', None):
+            hidden_states = context_parallel.gather_forward_split_backward(
+                hidden_states, 1,
+                context_parallel.get_intra_cp_process_group(), "up")
+
+        hidden_states = self.norm(hidden_states)
+
+        # add hidden states from the last decoder layer
+        if output_hidden_states:
+            all_hidden_states += (hidden_states, )
+
+        # add hidden states from the last decoder layer
+        if output_hidden_states:
+            all_hidden_states += (hidden_states, )
+
+        next_cache = next_decoder_cache if use_cache else None
+        if return_legacy_cache:
+            next_cache = next_cache.to_legacy_cache()
+
+        if not return_dict:
+            return tuple(
+                v for v in
+                [hidden_states, next_cache, all_hidden_states, all_self_attns]
+                if v is not None)
+        return BaseModelOutputWithPast(
+            last_hidden_state=hidden_states,
+            past_key_values=next_cache,
+            hidden_states=all_hidden_states,
+            attentions=all_self_attns,
+        )
+
+    def _update_causal_mask(
+        self,
+        attention_mask: torch.Tensor,
+        input_tensor: torch.Tensor,
+        cache_position: torch.Tensor,
+        past_key_values: Cache,
+        output_attentions: bool,
+    ):
+        if attention_mask is not None:
+            return attention_mask
+        return None
 
 
 class Linear3d(nn.Module):
@@ -73,18 +255,37 @@ class LlamaMLP(nn.Module):
         return out
 
 
+def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
+    batch, num_key_value_heads, slen, head_dim = hidden_states.shape
+    if n_rep == 1:
+        return hidden_states
+    hidden_states = hidden_states[:, :,
+                                  None, :, :].expand(batch,
+                                                     num_key_value_heads,
+                                                     n_rep, slen, head_dim)
+    return hidden_states.reshape(batch, num_key_value_heads * n_rep, slen,
+                                 head_dim)
+
+
 class CoreAttention(nn.Module):
     def __init__(self, config: LlamaConfig):
         super().__init__()
         self.config = config
         self.hidden_size = config.hidden_size
         self.num_heads = config.num_attention_heads
+        self.num_key_value_heads = config.num_key_value_heads
+        self.num_key_value_groups = self.num_heads // self.num_key_value_heads
         self.head_dim = self.hidden_size // self.num_heads
 
     def forward(self, query_states, key_states, value_states, attention_mask):
         bsz = query_states.shape[0]
         q_len = query_states.shape[-2]
         kv_seq_len = key_states.shape[-2]
+
+        if version.parse(
+                transformers.__version__) >= version.parse('4.36'):  # llama3
+            key_states = repeat_kv(key_states, self.num_key_value_groups)
+            value_states = repeat_kv(value_states, self.num_key_value_groups)
 
         attn_weights = torch.einsum("abij,abjk->abik", query_states,
                                     key_states.transpose(2, 3)) / math.sqrt(
@@ -130,6 +331,7 @@ class LlamaAttention(nn.Module):
         self.hidden_size = config.hidden_size
         self.num_heads = config.num_attention_heads
         self.head_dim = self.hidden_size // self.num_heads
+        self.num_key_value_heads = config.num_key_value_heads
         self.max_position_embeddings = config.max_position_embeddings
 
         if (self.head_dim * self.num_heads) != self.hidden_size:
@@ -139,12 +341,21 @@ class LlamaAttention(nn.Module):
         self.q_proj = nn.Linear(self.hidden_size,
                                 self.num_heads * self.head_dim,
                                 bias=False)
-        self.k_proj = nn.Linear(self.hidden_size,
-                                self.num_heads * self.head_dim,
-                                bias=False)
-        self.v_proj = nn.Linear(self.hidden_size,
-                                self.num_heads * self.head_dim,
-                                bias=False)
+        if version.parse(
+                transformers.__version__) >= version.parse('4.36'):  # llama3
+            self.k_proj = nn.Linear(self.hidden_size,
+                                    self.num_key_value_heads * self.head_dim,
+                                    bias=False)
+            self.v_proj = nn.Linear(self.hidden_size,
+                                    self.num_key_value_heads * self.head_dim,
+                                    bias=False)
+        else:
+            self.k_proj = nn.Linear(self.hidden_size,
+                                    self.num_heads * self.head_dim,
+                                    bias=False)
+            self.v_proj = nn.Linear(self.hidden_size,
+                                    self.num_heads * self.head_dim,
+                                    bias=False)
         self.o_proj = nn.Linear(self.num_heads * self.head_dim,
                                 self.hidden_size,
                                 bias=False)
@@ -221,9 +432,12 @@ class LlamaAttention(nn.Module):
         value_states = self.v_proj(hidden_states)
 
         if self.tp_col_mesh is not None:
-            query_states.register_hook(lambda grad: _grad_shard_tp(grad))
-            key_states.register_hook(lambda grad: _grad_shard_tp(grad))
-            value_states.register_hook(lambda grad: _grad_shard_tp(grad))
+            if query_states.requires_grad:
+                query_states.register_hook(lambda grad: _grad_shard_tp(grad))
+            if key_states.requires_grad:
+                key_states.register_hook(lambda grad: _grad_shard_tp(grad))
+            if value_states.requires_grad:
+                value_states.register_hook(lambda grad: _grad_shard_tp(grad))
         elif tensor_parallel.get_tp_context().is_initialized():
             tensor_parallel.fx_register_hook(query_states, ("dp", None, "tp"))
             tensor_parallel.fx_register_hook(key_states, ("dp", None, "tp"))
@@ -231,9 +445,17 @@ class LlamaAttention(nn.Module):
 
         query_states = query_states.view(bsz, q_len, self.num_heads,
                                          self.head_dim)
-        key_states = key_states.view(bsz, q_len, self.num_heads, self.head_dim)
-        value_states = value_states.view(bsz, q_len, self.num_heads,
+        if version.parse(transformers.__version__) >= version.parse('4.36'):
+            key_states = key_states.view(bsz, q_len, self.num_key_value_heads,
                                          self.head_dim)
+            value_states = value_states.view(bsz, q_len,
+                                             self.num_key_value_heads,
+                                             self.head_dim)
+        else:
+            key_states = key_states.view(bsz, q_len, self.num_heads,
+                                         self.head_dim)
+            value_states = value_states.view(bsz, q_len, self.num_heads,
+                                             self.head_dim)
 
         if self.tp_mesh is not None:
             mark_sharding(query_states, self.tp_mesh, (0, 1, 2, 3))
@@ -250,7 +472,6 @@ class LlamaAttention(nn.Module):
         query_states = query_states.transpose(1, 2)
         key_states = key_states.transpose(1, 2)
         value_states = value_states.transpose(1, 2)
-
         if self.sp_mesh_4d is not None:
             # insert all-to-all
             mark_sharding(query_states, self.sp_mesh_4d, (0, 1, 2, 3))
@@ -263,9 +484,15 @@ class LlamaAttention(nn.Module):
         kv_seq_len = key_states.shape[-2]
         if past_key_value is not None:
             kv_seq_len += past_key_value[0].shape[-2]
-        cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
-        query_states, key_states = apply_rotary_pos_emb(
-            query_states, key_states, cos, sin, position_ids)
+
+        if version.parse(transformers.__version__) >= version.parse('4.36'):
+            cos, sin = self.rotary_emb(value_states, position_ids=position_ids)
+            query_states, key_states = apply_rotary_pos_emb(
+                query_states, key_states, cos, sin)
+        else:
+            cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
+            query_states, key_states = apply_rotary_pos_emb(
+                query_states, key_states, cos, sin, position_ids)
         # [bsz, nh, t, hd]
 
         if past_key_value is not None:
@@ -275,9 +502,35 @@ class LlamaAttention(nn.Module):
 
         past_key_value = (key_states, value_states) if use_cache else None
 
-        attn_output, attn_weights = self.core_attn(query_states, key_states,
-                                                   value_states,
-                                                   attention_mask)
+        from torchacc.ops import spmd_flash_attn_varlen_xla
+        attn_output = None
+        attn_weights = None
+        if os.getenv("ACC_FLASH_ATTN", "0") == "1":
+            query_states = einops.rearrange(query_states, "b h s d -> b s h d")
+            key_states = einops.rearrange(key_states, "b h s d -> b s h d")
+            value_states = einops.rearrange(value_states, "b h s d -> b s h d")
+
+            device_ids = np.array(range(self.dp_num * self.tp_num))
+            mesh = xs.Mesh(device_ids, (self.dp_num, self.tp_num),
+                           ('fsdp', 'tensor'))
+            partition_spec = ('fsdp', None, 'tensor', None
+                              )  # q  ((bs * seq_len), num_head, hidden_dim)
+            attn_output = spmd_flash_attn_varlen_xla(
+                query_states,
+                key_states,
+                value_states,
+                attention_mask,
+                dropout_p=0.0,
+                softmax_scale=None,
+                causal=True,
+                mesh=mesh,
+                partition_spec=partition_spec)
+            attn_output = einops.rearrange(attn_output, "b s h d -> b h s d")
+        else:
+            attn_output, attn_weights = self.core_attn(query_states,
+                                                       key_states,
+                                                       value_states,
+                                                       attention_mask)
         if self.sp_mesh_4d is not None:
             mark_sharding(attn_output, self.sp_mesh_4d, (0, 1, 2, 3))
             attn_output.register_hook(lambda grad: _grad_shard_sp_4d(grad))
@@ -286,11 +539,13 @@ class LlamaAttention(nn.Module):
         attn_output = attn_output.reshape(bsz, q_len, self.hidden_size)
         if self.tp_col_mesh is not None:
             mark_sharding(attn_output, self.tp_col_mesh, (0, 1, 2))
-            attn_output.register_hook(lambda grad: _grad_shard_tp(grad))
+            if attn_output.requires_grad:
+                attn_output.register_hook(lambda grad: _grad_shard_tp(grad))
         elif self.sp_mesh_3d is not None:
             # insert all-to-all
             mark_sharding(attn_output, self.sp_mesh_3d, (0, 1, 2))
-            attn_output.register_hook(lambda grad: _grad_shard_sp_3d(grad))
+            if attn_output.requires_grad:
+                attn_output.register_hook(lambda grad: _grad_shard_sp_3d(grad))
         elif tensor_parallel.get_tp_context().is_initialized():
             attn_output = tensor_parallel.fx_mark_sharding(attn_output,
                                                            ("dp", None, "tp"),
@@ -315,7 +570,7 @@ class LlamaAttention(nn.Module):
 
 
 class LlamaDecoderLayer(nn.Module):
-    def __init__(self, config: LlamaConfig):
+    def __init__(self, config: LlamaConfig, layer_idx: int):
         super().__init__()
         self.hidden_size = config.hidden_size
         self.self_attn = LlamaAttention(config=config)
@@ -337,6 +592,7 @@ class LlamaDecoderLayer(nn.Module):
         past_key_value: Optional[Tuple[torch.Tensor]] = None,
         output_attentions: Optional[bool] = False,
         use_cache: Optional[bool] = False,
+        cache_position: Optional[torch.LongTensor] = None,
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor,
                                                  torch.FloatTensor]]]:
         """
@@ -401,6 +657,8 @@ def flash_attn_fwd(
     self,
     hidden_states: torch.Tensor,
     fsdp_num: int = None,
+    ulysses_sp_num: int = None,
+    tp_num: int = None,
     use_spmd: bool = None,
     attention_mask: Optional[torch.Tensor] = None,
     position_ids: Optional[torch.Tensor] = None,
@@ -410,7 +668,62 @@ def flash_attn_fwd(
     cache_position: Optional[torch.LongTensor] = None,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor],
            Optional[Tuple[torch.Tensor]]]:
-    from torchacc.ops import flash_attn_varlen_xla, spmd_flash_attn_varlen_xla
+
+    if ulysses_sp_num > 1 and not use_spmd:
+        bsz, q_len, _ = hidden_states.size()
+        query_states = self.q_proj(hidden_states).view(bsz, q_len,
+                                                       self.num_heads,
+                                                       self.head_dim)
+        key_states = self.k_proj(hidden_states).view(bsz, q_len,
+                                                     self.num_key_value_heads,
+                                                     self.head_dim)
+        value_states = self.v_proj(hidden_states).view(
+            bsz, q_len, self.num_key_value_heads, self.head_dim)
+        cp_func = context_parallel.ulysses
+        cp_group = context_parallel.get_context_parallel_group()
+
+        def rope_func(q, k, v):
+            query_states = q.transpose(1,
+                                       2)  # bsz, nheads / N, seqlen, headdim
+            key_states = k.transpose(1, 2)
+            value_states = v.transpose(1, 2)
+
+            if version.parse(
+                    transformers.__version__) >= version.parse('4.36'):
+                cos, sin = self.rotary_emb(value_states, position_ids)
+                query_states, key_states = apply_rotary_pos_emb(
+                    query_states, key_states, cos, sin)
+            else:
+                cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
+                query_states, key_states = apply_rotary_pos_emb(
+                    query_states, key_states, cos, sin, position_ids)
+            query_states, key_states = apply_rotary_pos_emb(
+                query_states, key_states, cos, sin, position_ids)
+
+            query_states = einops.rearrange(query_states, "b h s d -> b s h d")
+            key_states = einops.rearrange(key_states, "b h s d -> b s h d")
+            value_states = einops.rearrange(value_states, "b h s d -> b s h d")
+
+            return query_states, key_states, value_states
+
+        output = cp_func(
+            query_states,
+            key_states,
+            value_states,
+            None,
+            None,  # Use fixed len FA
+            dropout_p=0.0,
+            softmax_scale=None,
+            causal=True,
+            process_group=cp_group,
+            position_ids=position_ids,
+            rope_func=rope_func)
+
+        return self.o_proj(einops.rearrange(
+            output, "b s h d -> b s (h d)")), None, past_key_value
+
+    from torchacc.ops import (flash_attn_varlen_xla, flash_attn_xla,
+                              spmd_flash_attn_varlen_xla)
     bsz, q_len, _ = hidden_states.size()
 
     query_states = (self.q_proj(hidden_states).view(bsz, q_len, self.num_heads,
@@ -444,52 +757,43 @@ def flash_attn_fwd(
     # See https://github.com/HazyResearch/flash-attention/blob/main/flash_attn/flash_attention.py
     # if attention_mask is not None:
     #     value_states = value_states * attention_mask.unsqueeze(1).unsqueeze(-1)
-    q = einops.rearrange(query_states, "b h s ... -> (b s) h ...")
-    k = einops.rearrange(key_states, "b h s ... -> (b s) h ...")
-    v = einops.rearrange(value_states, "b h s ... -> (b s) h ...")
-    max_s = q_len
+    query_states = einops.rearrange(query_states, "b h s d -> b s h d")
+    key_states = einops.rearrange(key_states, "b h s d -> b s h d")
+    value_states = einops.rearrange(value_states, "b h s d -> b s h d")
+
+    # b seq head_num hidden_size
 
     output = None
     if use_spmd:
-        cu_q_lens = torch.arange(0, (bsz / fsdp_num + 1) * q_len,
-                                 step=q_len,
-                                 dtype=torch.int32,
-                                 device=q.device)
         device_ids = np.array(range(fsdp_num))
         mesh = xs.Mesh(device_ids, (fsdp_num, 1), ('fsdp', 'tensor'))
-        partition_spec = ('fsdp', None, None)
-        output = spmd_flash_attn_varlen_xla(q,
-                                            k,
-                                            v,
-                                            cu_q_lens,
-                                            cu_q_lens,
-                                            max_s,
-                                            max_s,
+        partition_spec = ('fsdp', None, None, None)
+        if ulysses_sp_num > 1:
+            mesh = xs.Mesh(device_ids,
+                           (fsdp_num // ulysses_sp_num, ulysses_sp_num),
+                           ('dp', 'sp'))
+            partition_spec = ('dp', None, 'sp', None)
+
+        output = spmd_flash_attn_varlen_xla(query_states,
+                                            key_states,
+                                            value_states,
+                                            attention_mask,
                                             dropout_p=0.0,
                                             softmax_scale=None,
                                             causal=True,
                                             mesh=mesh,
                                             partition_spec=partition_spec)
     else:
-        cu_q_lens = torch.arange(0, (bsz + 1) * q_len,
-                                 step=q_len,
-                                 dtype=torch.int32,
-                                 device=q.device)
-        output = flash_attn_varlen_xla(q,
-                                       k,
-                                       v,
-                                       cu_q_lens,
-                                       cu_q_lens,
-                                       max_s,
-                                       max_s,
-                                       dropout_p=0.0,
-                                       softmax_scale=None,
-                                       causal=True)
+        output = flash_attn_xla(query_states,
+                                key_states,
+                                value_states,
+                                dropout_p=0.0,
+                                softmax_scale=None,
+                                causal=True)
 
-    output = einops.rearrange(output, "(b s) ... -> b s ...", b=bsz)
+    output = einops.rearrange(output, "b s h d -> b s (h d)")
 
-    return self.o_proj(einops.rearrange(
-        output, "b s h d -> b s (h d)")), None, past_key_value
+    return self.o_proj(output), None, past_key_value
 
 
 def flash_attn_prep_mask(self, attention_mask, input_shape, inputs_embeds,

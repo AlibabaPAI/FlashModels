@@ -33,13 +33,8 @@ class Builder(object):
         self.args = args
         self._init_fn = lambda func, *args, **kwargs: func(*args, **kwargs)
         if LOW_CPU_MEM_USAGE:
-            if self.args.sp_num == 1:
-                self._init_fn = lambda func, *args, **kwargs: \
-                    deferred_init.deferred_init(func, *args, **kwargs)
-            else:
-                logger.warning(
-                    "LOW_CPU_MEM_USAGE with lazy init does not support for ulysses now."
-                )
+            self._init_fn = lambda func, *args, **kwargs: \
+                deferred_init.deferred_init(func, *args, **kwargs)
 
     def build_model_dataloader(self):
         if self.args.resume_from_checkpoint and \
@@ -60,9 +55,11 @@ class Builder(object):
     def build_model_from_ckpt(self):
         config = AutoConfig.from_pretrained(self.args.model_name_or_path,
                                             trust_remote_code=True)
-        return self._init_fn(AutoModelForCausalLM.from_config,
-                             config,
-                             trust_remote_code=True)
+
+        model = self._init_fn(AutoModelForCausalLM.from_config,
+                              config,
+                              trust_remote_code=True)
+        return model
 
     def build_model_from_pretrain(self):
         has_weight = False

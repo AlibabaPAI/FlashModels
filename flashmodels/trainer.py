@@ -88,7 +88,7 @@ class Trainer(object):
             samples_per_step = float(
               self.args.micro_batch_size * self.args.gradient_accumulation_steps \
                   / time_each_step)
-            samples_per_step = samples_per_step * self.args.fsdp_num * self.args.dp_num
+            samples_per_step = samples_per_step * self.args.fsdp_num * self.args.dp_num / self.args.sp_num
             begin_time = time.time()
             train_format_string = "[TRAIN] {{epoch: {}, iteration: {}, batch_size: {}," \
                 " loss: {:.8f}, throughput: {:.2f} samples/sec}}"
@@ -250,12 +250,15 @@ class Trainer(object):
                 and not self.args.pp_num > 1) or (self.args.fsdp_num > 1
                                                   and self.args.spmd_fsdp):
             devices_ids = np.arange(self.args.world_size)
-            dp_num = self.args.dp_num if self.args.dp_num > 1 else self.args.fsdp_num
-            mesh = Mesh(devices_ids, (dp_num, self.args.tp_num), ("x", "y"))
+            dp_num = self.args.dp_num if self.args.dp_num > 1 else int(
+                self.args.fsdp_num / self.args.sp_num)
+            mesh = Mesh(devices_ids,
+                        (dp_num, self.args.tp_num, self.args.sp_num),
+                        ("x", "y", "z"))
             loader = pl.MpDeviceLoader(self.loader,
                                        self.device,
                                        input_sharding=xs.ShardingSpec(
-                                           mesh, (0, None)))
+                                           mesh, ("x", None)))
 
         for epoch in range(0, self.args.num_train_epochs):
             self.model.train()
